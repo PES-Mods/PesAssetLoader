@@ -1,0 +1,53 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="Main.cpp" />
+    <ClCompile Include="FileLoader.cpp" />
+    <ClCompile Include="MemoryLimits.cpp" />
+    <ClCompile Include="settings\Settings.cpp">
+      <Filter>settings</Filter>
+    </ClCompile>
+    <ClCompile Include="log\Log.cpp">
+      <Filter>log</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="pesapi">
+      <UniqueIdentifier>{00f9c57b-8754-4f17-82dc-78cd8f474ee1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="settings">
+      <UniqueIdentifier>{a19baf8a-3c9c-4f5e-be9d-c0822c5967e1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="log">
+      <UniqueIdentifier>{21ad1834-e6fd-4636-afdc-32412bb3b8bc}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="pesapi\DebugPrint.h">
+      <Filter>pesapi</Filter>
+    </ClInclude>
+    <ClInclude Include="pesapi\Error.h">
+      <Filter>pesapi</Filter>
+    </ClInclude>
+    <ClInclude Include="pesapi\LicenseCheck.h">
+      <Filter>pesapi</Filter>
+    </ClInclude>
+    <ClInclude Include="pesapi\Other.h">
+      <Filter>pesapi</Filter>
+    </ClInclude>
+    <ClInclude Include="pesapi\Patch.h">
+      <Filter>pesapi</Filter>
+    </ClInclude>
+    <ClInclude Include="pesapi\plugin.h">
+      <Filter>pesapi</Filter>
+    </ClInclude>
+    <ClInclude Include="Main.hpp" />
+    <ClInclude Include="settings\Settings.h">
+      <Filter>settings</Filter>
+    </ClInclude>
+    <ClInclude Include="Config.hpp" />
+    <ClInclude Include="log\Log.hpp">
+      <Filter>log</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>

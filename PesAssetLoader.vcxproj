@@ -1,0 +1,102 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{520b8180-bf09-46d3-a55c-b2d93f45a698}</ProjectGuid>
+    <RootNamespace>PesAssetLoader</RootNamespace>
+    <ProjectName>PesAssetLoader</ProjectName>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset Condition="'$(VisualStudioVersion)' == '15.0'">v141</PlatformToolset>
+    <PlatformToolset Condition="'$(VisualStudioVersion)' == '16.0'">v142</PlatformToolset>
+    <PlatformToolset Condition="'$(VisualStudioVersion)' == '17.0'">v143</PlatformToolset>
+    <PlatformToolset Condition="'$(PlatformToolset)' == ''">v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <TargetExt>.asi</TargetExt>
+    <OutDir>D:\Games\Pro Evo Soccer 5\plugins\</OutDir>
+    <IncludePath>$(IncludePath)</IncludePath>
+    <TargetName>PesAssetLoader</TargetName>
+    <IntDir>$(ProjectDir).obj\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_CRT_NON_CONFORMING_SWPRINTFS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)pesapi\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>No</GenerateDebugInformation>
+      <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
+      <SubSystem>Windows</SubSystem>
+    </Link>
+    <PostBuildEvent />
+    <PostBuildEvent />
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="FileLoader.cpp" />
+    <ClCompile Include="log\Log.cpp" />
+    <ClCompile Include="Main.cpp" />
+    <ClCompile Include="MemoryLimits.cpp" />
+    <ClCompile Include="settings\Settings.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Config.hpp" />
+    <ClInclude Include="log\Log.hpp" />
+    <ClInclude Include="Main.hpp" />
+    <ClInclude Include="pesapi\DebugPrint.h" />
+    <ClInclude Include="pesapi\Error.h" />
+    <ClInclude Include="pesapi\LicenseCheck.h" />
+    <ClInclude Include="pesapi\Other.h" />
+    <ClInclude Include="pesapi\Patch.h" />
+    <ClInclude Include="pesapi\plugin.h" />
+    <ClInclude Include="settings\Settings.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+  <PropertyGroup>
+    <Pes5Dir>$([MSBuild]::GetRegistryValueFromView('HKEY_LOCAL_MACHINE\SOFTWARE\KONAMIPES5\PES5', 'installdir', null, RegistryView.Registry32))</Pes5Dir>
+    <Pes6Dir>$([MSBuild]::GetRegistryValueFromView('HKEY_LOCAL_MACHINE\SOFTWARE\KONAMIPES6\PES6', 'installdir', null, RegistryView.Registry32))</Pes6Dir>
+    <We9Dir>$([MSBuild]::GetRegistryValueFromView('HKEY_LOCAL_MACHINE\SOFTWARE\KONAMIWE9\WE9', 'installdir', null, RegistryView.Registry32))</We9Dir>
+    <We9LeDir>$([MSBuild]::GetRegistryValueFromView('HKEY_LOCAL_MACHINE\SOFTWARE\KONAMI\WE9LEK', 'installdir', null, RegistryView.Registry32))</We9LeDir>
+  </PropertyGroup>
+  <Target Name="CopyToGames" AfterTargets="Build">
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(Pes5Dir)\plugins" Condition="'$(Pes5Dir)' != '' And Exists('$(Pes5Dir)\plugins')" />
+    <Message Importance="high" Condition="'$(Pes5Dir)' != '' And Exists('$(Pes5Dir)\plugins')" Text="Copied $(TargetFileName) to game folder: $(Pes5Dir)\plugins" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(We9Dir)\plugins" Condition="'$(We9Dir)' != '' And Exists('$(We9Dir)\plugins')" />
+    <Message Importance="high" Condition="'$(We9Dir)' != '' And Exists('$(We9Dir)\plugins')" Text="Copied $(TargetFileName) to game folder: $(We9Dir)\plugins" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(We9LeDir)\plugins" Condition="'$(We9LeDir)' != '' And Exists('$(We9LeDir)\plugins')" />
+    <Message Importance="high" Condition="'$(We9LeDir)' != '' And Exists('$(We9LeDir)\plugins')" Text="Copied $(TargetFileName) to game folder: $(We9LeDir)\plugins" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(Pes6Dir)\plugins" Condition="'$(Pes6Dir)' != '' And Exists('$(Pes6Dir)\plugins')" />
+    <Message Importance="high" Condition="'$(Pes6Dir)' != '' And Exists('$(Pes6Dir)\plugins')" Text="Copied $(TargetFileName) to game folder: $(Pes6Dir)\plugins" />
+  </Target>
+</Project>
