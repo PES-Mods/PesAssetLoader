@@ -4,6 +4,21 @@
     <ClCompile Include="Main.cpp" />
     <ClCompile Include="FileLoader.cpp" />
     <ClCompile Include="MemoryLimits.cpp" />
+    <ClCompile Include="TextureLimits.cpp" />
+    <ClCompile Include="MemoryMonitor.cpp" />
+    <ClCompile Include="TextureReplacement.cpp" />
+    <ClCompile Include="imgui\imgui.cpp">
+      <Filter>imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui\imgui_draw.cpp">
+      <Filter>imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui\imgui_tables.cpp">
+      <Filter>imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui\imgui_widgets.cpp">
+      <Filter>imgui</Filter>
+    </ClCompile>
     <ClCompile Include="settings\Settings.cpp">
       <Filter>settings</Filter>
     </ClCompile>
@@ -20,6 +35,9 @@
     </Filter>
     <Filter Include="log">
       <UniqueIdentifier>{21ad1834-e6fd-4636-afdc-32412bb3b8bc}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="imgui">
+      <UniqueIdentifier>{6b2f3c1e-9d4a-4e8b-a7c2-5f1e0d3b9a41}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -46,6 +64,7 @@
       <Filter>settings</Filter>
     </ClInclude>
     <ClInclude Include="Config.hpp" />
+    <ClInclude Include="stb_image.h" />
     <ClInclude Include="log\Log.hpp">
       <Filter>log</Filter>
     </ClInclude>

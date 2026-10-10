@@ -34,10 +34,10 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <TargetExt>.asi</TargetExt>
-    <OutDir>D:\Games\Pro Evo Soccer 5\plugins\</OutDir>
+    <OutDir>$(ProjectDir)output\</OutDir>
     <IncludePath>$(IncludePath)</IncludePath>
     <TargetName>PesAssetLoader</TargetName>
-    <IntDir>$(ProjectDir).obj\$(Configuration)\</IntDir>
+    <IntDir>$(ProjectDir).obj\</IntDir>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -48,13 +48,13 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_CRT_NON_CONFORMING_SWPRINTFS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <AdditionalIncludeDirectories>$(ProjectDir)pesapi\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)pesapi\;$(ProjectDir)imgui\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpplatest</LanguageStandard>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <GenerateDebugInformation>No</GenerateDebugInformation>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
       <SubSystem>Windows</SubSystem>
     </Link>
@@ -63,10 +63,17 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="FileLoader.cpp" />
+    <ClCompile Include="imgui\imgui.cpp" />
+    <ClCompile Include="imgui\imgui_draw.cpp" />
+    <ClCompile Include="imgui\imgui_tables.cpp" />
+    <ClCompile Include="imgui\imgui_widgets.cpp" />
     <ClCompile Include="log\Log.cpp" />
     <ClCompile Include="Main.cpp" />
     <ClCompile Include="MemoryLimits.cpp" />
+    <ClCompile Include="MemoryMonitor.cpp" />
     <ClCompile Include="settings\Settings.cpp" />
+    <ClCompile Include="TextureLimits.cpp" />
+    <ClCompile Include="TextureReplacement.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Config.hpp" />
@@ -79,6 +86,7 @@
     <ClInclude Include="pesapi\Patch.h" />
     <ClInclude Include="pesapi\plugin.h" />
     <ClInclude Include="settings\Settings.h" />
+    <ClInclude Include="stb_image.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
@@ -90,13 +98,17 @@
     <We9LeDir>$([MSBuild]::GetRegistryValueFromView('HKEY_LOCAL_MACHINE\SOFTWARE\KONAMI\WE9LEK', 'installdir', null, RegistryView.Registry32))</We9LeDir>
   </PropertyGroup>
   <Target Name="CopyToGames" AfterTargets="Build">
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(Pes5Dir)\plugins" Condition="'$(Pes5Dir)' != '' And Exists('$(Pes5Dir)\plugins')" />
-    <Message Importance="high" Condition="'$(Pes5Dir)' != '' And Exists('$(Pes5Dir)\plugins')" Text="Copied $(TargetFileName) to game folder: $(Pes5Dir)\plugins" />
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(We9Dir)\plugins" Condition="'$(We9Dir)' != '' And Exists('$(We9Dir)\plugins')" />
-    <Message Importance="high" Condition="'$(We9Dir)' != '' And Exists('$(We9Dir)\plugins')" Text="Copied $(TargetFileName) to game folder: $(We9Dir)\plugins" />
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(We9LeDir)\plugins" Condition="'$(We9LeDir)' != '' And Exists('$(We9LeDir)\plugins')" />
-    <Message Importance="high" Condition="'$(We9LeDir)' != '' And Exists('$(We9LeDir)\plugins')" Text="Copied $(TargetFileName) to game folder: $(We9LeDir)\plugins" />
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(Pes6Dir)\plugins" Condition="'$(Pes6Dir)' != '' And Exists('$(Pes6Dir)\plugins')" />
-    <Message Importance="high" Condition="'$(Pes6Dir)' != '' And Exists('$(Pes6Dir)\plugins')" Text="Copied $(TargetFileName) to game folder: $(Pes6Dir)\plugins" />
+    <ItemGroup>
+      <PluginFiles Include="$(TargetPath)" />
+      <PluginFiles Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PluginFiles)" DestinationFolder="$(Pes5Dir)\plugins" Condition="'$(Pes5Dir)' != '' And Exists('$(Pes5Dir)\plugins')" />
+    <Message Importance="high" Condition="'$(Pes5Dir)' != '' And Exists('$(Pes5Dir)\plugins')" Text="Copied @(PluginFiles->'%(Filename)%(Extension)', ', ') to game folder: $(Pes5Dir)\plugins" />
+    <Copy SourceFiles="@(PluginFiles)" DestinationFolder="$(We9Dir)\plugins" Condition="'$(We9Dir)' != '' And Exists('$(We9Dir)\plugins')" />
+    <Message Importance="high" Condition="'$(We9Dir)' != '' And Exists('$(We9Dir)\plugins')" Text="Copied @(PluginFiles->'%(Filename)%(Extension)', ', ') to game folder: $(We9Dir)\plugins" />
+    <Copy SourceFiles="@(PluginFiles)" DestinationFolder="$(We9LeDir)\plugins" Condition="'$(We9LeDir)' != '' And Exists('$(We9LeDir)\plugins')" />
+    <Message Importance="high" Condition="'$(We9LeDir)' != '' And Exists('$(We9LeDir)\plugins')" Text="Copied @(PluginFiles->'%(Filename)%(Extension)', ', ') to game folder: $(We9LeDir)\plugins" />
+    <Copy SourceFiles="@(PluginFiles)" DestinationFolder="$(Pes6Dir)\plugins" Condition="'$(Pes6Dir)' != '' And Exists('$(Pes6Dir)\plugins')" />
+    <Message Importance="high" Condition="'$(Pes6Dir)' != '' And Exists('$(Pes6Dir)\plugins')" Text="Copied @(PluginFiles->'%(Filename)%(Extension)', ', ') to game folder: $(Pes6Dir)\plugins" />
   </Target>
 </Project>

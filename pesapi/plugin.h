@@ -17,7 +17,7 @@ typedef struct IUnknown IUnknown;
 
 enum ePluginApp {
     APP_UNKNOWN = 0,
-    APP_PES = 1,
+    APP_GAME = 1,
     APP_SETTINGS = 2,
     APP_COUNT
 };
@@ -33,11 +33,11 @@ enum ePluginApp {
       ((unsigned int)(prot) << 4)  | \
       ((unsigned int)(app)) )
 
-
-#define ID_PES5          PES_VERSION(5, 1,0,0,1, 1, APP_PES)
-#define ID_PES6          PES_VERSION(6, 1,0,0,1, 1, APP_PES)
-#define ID_SETTINGS_PES5 PES_VERSION(5, 1,0,0,1, 1, APP_SETTINGS)
+#define ID_PES6          PES_VERSION(6, 1,0,0,1, 1, APP_GAME)
+#define ID_PES5          PES_VERSION(5, 1,0,0,1, 1, APP_GAME)
 #define ID_SETTINGS_PES6 PES_VERSION(6, 1,0,0,1, 1, APP_SETTINGS)
+#define ID_SETTINGS_PES5 PES_VERSION(5, 1,0,0,1, 1, APP_SETTINGS)
+#define ID_SETTINGS_WE9  PES_VERSION(9, 1,0,0,1, 1, APP_SETTINGS)
 
 namespace PES {
 
@@ -65,20 +65,6 @@ public:
     inline unsigned char version3() { return mVersion3; }
     inline unsigned char version4() { return mVersion4; }
     inline unsigned char protection() { return mProtection; }
-
-    inline std::wstring name() {
-        if (mApp == APP_UNKNOWN || mApp >= APP_COUNT)
-            return L"Unknown";
-        static wchar_t const *AppName[] = {
-            L"Unknown",
-            L"PES",
-            L"Settings"
-        };
-        static wchar_t const *Protection[] = { L"", L" (license)" };
-        //return plugin::Format(L"%s %02d v.%d.%d.%d.%d%s", AppName[mApp], game(),
-        //    version1(), version2(), version3(), version4(), Protection[mProtection == 1]);
-        return std::wstring();
-    }
 };
 
 inline uintptr_t DetectAppEntryPoint() {
@@ -99,17 +85,24 @@ inline uintptr_t GetEntryPoint() {
 
 inline Version DetectAppVersion() {
     switch (GetEntryPoint()) {
-    case 0x89E231:
-    case 0xACDFE0:
+    case 0x89E231: // PES5, WE9
         return ID_PES5;
-    case 0x434866:
-        return ID_SETTINGS_PES5;
+    //case 0x899F29: // WE9LE
+    //    return ID_WE9LE;
+    case 0x434866: // settings PES5, WE9
+        return (plugin::patch::GetUChar(0x489240) == 'W') ? ID_SETTINGS_WE9 : ID_SETTINGS_PES5;
+    //case 0x434856: // settings WE9LE
+    //    return ID_SETTINGS_WE9LE;
     case 0x41A3CE:
         return ID_PES6;
     case 0x4176CB:
         return ID_SETTINGS_PES6;
     }
     return VERSION_UNKNOWN;
+}
+
+inline bool IsWE9() {
+    return plugin::patch::GetUChar(0xACE4B8) == 'W';
 }
 
 inline Version GetAppVersion() {

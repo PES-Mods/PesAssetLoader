@@ -6,6 +6,7 @@ using namespace std;
 class Config : public SettingsAbstract {
 public:
     SETTINGS_PARAMETER(int,    LOG_LEVEL,  "MAIN/LOG_LEVEL",         0);
+    SETTINGS_PARAMETER(int,    MEMORY_MONITOR, "MAIN/MEMORY_MONITOR", 0);
     SETTINGS_PARAMETER(string, MODE,       "FILE_LOADER/MODE",       "");
     SETTINGS_PARAMETER(string, PATH1,      "FILE_LOADER/PATH1",      "");
     SETTINGS_PARAMETER(string, PATH2,      "FILE_LOADER/PATH2",      "");
@@ -32,6 +33,15 @@ public:
     SETTINGS_PARAMETER(string, ARENA_12,   "MEMORY_LIMITS/ARENA_12", "");
     SETTINGS_PARAMETER(string, ARENA_13,   "MEMORY_LIMITS/ARENA_13", "");
     SETTINGS_PARAMETER(string, ARENA_15,   "MEMORY_LIMITS/ARENA_15", "");
+    SETTINGS_PARAMETER(string, ARENA_17,   "MEMORY_LIMITS/ARENA_17", "");
+    SETTINGS_PARAMETER(string, ARENA_18,   "MEMORY_LIMITS/ARENA_18", "");
+    SETTINGS_PARAMETER(string, ARENA_19,   "MEMORY_LIMITS/ARENA_19", "");
+    SETTINGS_PARAMETER(string, ARENA_20,   "MEMORY_LIMITS/ARENA_20", "");
     SETTINGS_PARAMETER(string, ARENA_21,   "MEMORY_LIMITS/ARENA_21", "");
     SETTINGS_PARAMETER(string, ARENA_23,   "MEMORY_LIMITS/ARENA_23", "");
+    // game textures from DDS/PNG files named like the textures inside the .txs files (FOLDER\<name>.dds|.png,
+    // FOLDER\<language letter>\<name>.dds|.png first); LOG lists named textures drawn without a file (once per name, LOG_LEVEL >= 1)
+    SETTINGS_PARAMETER(bool,    TEXTURES,        "TEXTURES/ENABLED",  true);
+    SETTINGS_PARAMETER(wstring, TEXTURES_FOLDER, "TEXTURES/FOLDER",   L"dat\\textures");
+    SETTINGS_PARAMETER(bool,    TEXTURES_LOG,    "TEXTURES/LOG",      false);
 };

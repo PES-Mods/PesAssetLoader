@@ -2,6 +2,7 @@
 #include "DebugPrint.h"
 
 uintptr_t FileSetLoadOverrideFilter = 0;
+uintptr_t gRegisterArchive2 = 0;
 enum class AssetLoadingMode { Cached, Dynamic };
 AssetLoadingMode Mode = AssetLoadingMode::Cached;
 char const *GameDirPath = 0;
@@ -25,6 +26,49 @@ struct weFileId {
     short FileIndex() { return fileIndex; }
 };
 
+// Language slot of an asset folder: the letter before '_' in "e_text", "g_sound", ...
+// '0' - language-independent archives (0_text, 0_sound)
+// 'x' - shared folder, used for any language when the file is missing in the language folder
+const char kNoLangSlot = '0';
+const char kSharedLangSlot = 'x';
+
+// Currently mounted language for each archive id (0_sound, 0_text, lang sound, lang text).
+// Sound (commentary) and text languages can differ, and the sound archive is re-mounted at runtime.
+static char gMountedLang[4] = { kNoLangSlot, kNoLangSlot, 'e', 'e' };
+
+static unsigned int MakeAssetKey(char langSlot, unsigned int archiveId, unsigned int fileIndex) {
+    return ((unsigned int)(unsigned char)langSlot << 24) | weFileId::MakeKey(archiveId, fileIndex);
+}
+
+struct ArchiveFolder { unsigned int archiveId; char langSlot; };
+
+// "0_text" -> {1,'0'}, "0_sound" -> {0,'0'}, "<c>_text" -> {3,c}, "<c>_sound" -> {2,c}
+static bool ParseArchiveFolderName(string const &name, ArchiveFolder &out) {
+    string n = ToLower(name);
+    if (n.size() < 3 || n[1] != '_')
+        return false;
+    char c = n[0];
+    if (!((c >= 'a' && c <= 'z') || c == kNoLangSlot))
+        return false;
+    string type = n.substr(2);
+    unsigned int base = (c == kNoLangSlot) ? 0 : 2;
+    if (type == "sound")
+        out.archiveId = base;
+    else if (type == "text")
+        out.archiveId = base + 1;
+    else
+        return false;
+    out.langSlot = c;
+    return true;
+}
+
+// Folders to look up for the archive, in priority order
+static vector<char> LangSlotsForArchive(unsigned int archiveId) {
+    if (archiveId < 2)
+        return { kNoLangSlot };
+    return { gMountedLang[archiveId & 3], kSharedLangSlot };
+}
+
 static map<unsigned int, string> &AssetsMap() {
     static map<unsigned int, string> assetsMap;
     return assetsMap;
@@ -33,20 +77,6 @@ static map<unsigned int, string> &AssetsMap() {
 static vector<string> &AssetsFolders() {
     static vector<string> assetsFolders;
     return assetsFolders;
-}
-
-static map<string, unsigned int> &ArchiveIDs() {
-    static map<string, unsigned int> archiveIDs = {
-        { "0_sound", 0 }, { "0_text", 1 },
-        { "e_sound", 2 }, { "e_text", 3 },
-        { "j_sound", 2 }, { "j_text", 3 },
-        { "g_sound", 2 }, { "g_text", 3 },
-        { "f_sound", 2 }, { "f_text", 3 },
-        { "i_sound", 2 }, { "i_text", 3 },
-        { "s_sound", 2 }, { "s_text", 3 },
-        { "k_sound", 2 }, { "k_text", 3 }
-    };
-    return archiveIDs;
 }
 
 static string const &NormalizedGameDirPath() {
@@ -99,7 +129,7 @@ struct FindHandle {
     }
 };
 
-static bool ScanArchiveFolder(string const &archiveDir, unsigned int archiveId, int wantedIndex) {
+static bool ScanArchiveFolder(string const &archiveDir, ArchiveFolder const &folder, int wantedIndex) {
     LOG(LOG_LEVEL_1, "[FileLoader] scanning \"%s\"", archiveDir.c_str());
     vector<string> stack;
     stack.push_back(archiveDir);
@@ -128,10 +158,10 @@ static bool ScanArchiveFolder(string const &archiveDir, unsigned int archiveId, 
                 continue;
             if (entryFullPath.size() >= 256)
                 continue;
-            unsigned int key = weFileId::MakeKey(archiveId, fileIndex);
+            unsigned int key = MakeAssetKey(folder.langSlot, folder.archiveId, fileIndex);
             if (!AssetsMap().contains(key)) {
                 AssetsMap()[key] = entryFullPath;
-                LOG(LOG_LEVEL_2, "[FileLoader] registered \"%s\" at [%u,%u]", entryFullPath.c_str(), archiveId, fileIndex);
+                LOG(LOG_LEVEL_2, "[FileLoader] registered \"%s\" at [%u,%u] (%c)", entryFullPath.c_str(), folder.archiveId, fileIndex, folder.langSlot);
             }
             if (wantedIndex >= 0)
                 return true;
@@ -141,7 +171,8 @@ static bool ScanArchiveFolder(string const &archiveDir, unsigned int archiveId, 
     return found;
 }
 
-static void ScanAssetsFolders(int wantedArchive, int wantedIndex) {
+// wantedArchive/wantedIndex/wantedLangSlot: -1 (or 0 for lang slot) means "any"
+static bool ScanAssetsFolders(int wantedArchive, int wantedIndex, char wantedLangSlot) {
     for (auto const &rootPath : AssetsFolders()) {
         WIN32_FIND_DATAA fd;
         FindHandle fh(FindFirstFileA((rootPath + "\\*").c_str(), &fd));
@@ -153,26 +184,42 @@ static void ScanAssetsFolders(int wantedArchive, int wantedIndex) {
                 continue;
             if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
                 continue;
-            auto it = ArchiveIDs().find(ToLower(string(name)));
-            if (it == ArchiveIDs().end())
+            ArchiveFolder folder;
+            if (!ParseArchiveFolderName(name, folder))
                 continue;
-            if (wantedArchive >= 0 && it->second != (unsigned int)wantedArchive)
+            if (wantedArchive >= 0 && folder.archiveId != (unsigned int)wantedArchive)
                 continue;
-            if (ScanArchiveFolder(rootPath + "\\" + name, it->second, wantedIndex) && wantedIndex >= 0)
-                return;
+            if (wantedLangSlot && folder.langSlot != wantedLangSlot)
+                continue;
+            if (ScanArchiveFolder(rootPath + "\\" + name, folder, wantedIndex) && wantedIndex >= 0)
+                return true;
         } while (FindNextFileA(fh.h, &fd) != 0);
     }
+    return false;
+}
+
+static string const *FindAsset(unsigned int archiveId, unsigned int fileIndex) {
+    for (char slot : LangSlotsForArchive(archiveId)) {
+        auto it = AssetsMap().find(MakeAssetKey(slot, archiveId, fileIndex));
+        if (it != AssetsMap().end())
+            return &it->second;
+    }
+    return nullptr;
 }
 
 static int MyFilter(weFileId id) {
     //if (id.archiveId == 1)
     //    DebugPrint(Format("loading file: %d\n", id.fileIndex));
-    unsigned int key = id.Key();
+    unsigned int archiveId = id.ArchiveId() & 7;
+    unsigned int fileIndex = id.FileIndex() & 0xFFFF;
     if (Mode == AssetLoadingMode::Dynamic) {
-        AssetsMap().erase(key);
-        ScanAssetsFolders((key >> 16) & 7, key & 0xFFFF);
+        for (char slot : LangSlotsForArchive(archiveId)) {
+            AssetsMap().erase(MakeAssetKey(slot, archiveId, fileIndex));
+            if (ScanAssetsFolders(archiveId, fileIndex, slot))
+                break;
+        }
     }
-    return AssetsMap().contains(key) ? 1 : 0;
+    return FindAsset(archiveId, fileIndex) ? 1 : 0;
 }
 
 static void OnFileSetLoadOverrideFilter(void *) {
@@ -192,63 +239,49 @@ static void OnFileSetLoadOverrideFilter(void *) {
     }
     Mode = ToLower(config().MODE) == "dynamic" ? AssetLoadingMode::Dynamic : AssetLoadingMode::Cached;
     if (Mode == AssetLoadingMode::Cached)
-        ScanAssetsFolders(-1, -1);
+        ScanAssetsFolders(-1, -1, 0);
     plugin::CallDynGlobal(FileSetLoadOverrideFilter, MyFilter);
 }
 
 static void weFileBuildLoosePath(weFileId id, char *outPath) {
-    auto it = AssetsMap().find(id.Key());
-    if (it != AssetsMap().end()) {
+    auto asset = FindAsset(id.ArchiveId() & 7, id.FileIndex() & 0xFFFF);
+    if (asset) {
         strcpy(outPath, NormalizedGameDirPath().c_str());
-        strcat(outPath, it->second.c_str());
+        strcat(outPath, asset->c_str());
         LOG(LOG_LEVEL_3, "[FileLoader] loading \"%s\"", outPath);
     }
     else
         outPath[0] = '\0';
 }
 
-void OnLoadBallTexture(weFileId fileId, void *callback, const void *userData, unsigned int userDataSize) {
-    Call<0x5B73D0>(fileId, callback, userData, userDataSize); // weFileLoad
-    Call<0x5B73D0>(weFileId::MakeKey(1, 12'000), callback, userData, userDataSize); // weFileLoad
-}
-
-void OnClearBall() {
-    Call<0x61E4B0>(); // ClearBall
-    auto nmTex = CallAndReturn<void *, 0x8D5600>(12'000); // GetTextureAssetIfLoaded
-    if (nmTex) {
-        Call<0x8D57D0>(nmTex); // TexDel
-        Call<0x8311F0>(nmTex); // ArenaFree
+// Called for every mounted AFS archive (at startup, and again when the commentary language changes)
+static char OnRegisterArchive2(int mountId, int langId, int archiveType, int fileCount, int maxFiles, const char *path) {
+    unsigned int archiveId = (archiveType + 2 * (langId != 0)) & 3;
+    char lang = kNoLangSlot;
+    if (langId != 0 && path) {
+        const char *fileName = path;
+        for (const char *p = path; *p; ++p) {
+            if (*p == '\\' || *p == '/')
+                fileName = p + 1;
+        }
+        lang = (char)tolower((unsigned char)fileName[0]);
     }
+    gMountedLang[archiveId] = lang;
+    LOG(LOG_LEVEL_1, "[FileLoader] mounted \"%s\" as archive %u (language '%c')", path ? path : "", archiveId, lang);
+    return CallAndReturnDynGlobal<char>(gRegisterArchive2, mountId, langId, archiveType, fileCount, maxFiles, path);
 }
 
-int OnGetNormalMapParams(void *mat, float *dir) {
-    void *light = (float *)(0xE97540 + 0x60 * 2);
-
-    *raw_ptr<int>(light, 0x50) = 8;
-
-    *raw_ptr<float>(light, 0x0) = 1.0f;
-    *raw_ptr<float>(light, 0x4) = 1.0f;
-    *raw_ptr<float>(light, 0x8) = 1.0f;
-    *raw_ptr<float>(light, 0xC) = 1.0f;
-
-    *raw_ptr<float>(light, 0x10) = 1.0f;
-    *raw_ptr<float>(light, 0x14) = 1.0f;
-    *raw_ptr<float>(light, 0x18) = 1.0f;
-    *raw_ptr<float>(light, 0x1C) = 1.0f;
-
-    dir[0] = 0.5f;
-    dir[1] = 0.0f;
-    dir[2] = 0.5f;
-    dir[3] = 1.0f;
-    return CallAndReturn<int, 0x429CA0>(mat, dir);
-}
-
-uintptr_t gOrigLoadBodyModel = 0;
-
-void OnLoadBodyModel(void *fileResult) {
-    auto id = raw_ptr<weFileId>(fileResult, 0x40);
-    DebugPrint(Format("loading kit file: { archive: %d, file: %d }\n", id->ArchiveId(), id->FileIndex()));
-    CallDynGlobal(gOrigLoadBodyModel, fileResult);
+// Directory of the game executable
+static char const *ExeDirPath() {
+    static char path[MAX_PATH] = {};
+    if (!path[0]) {
+        DWORD len = GetModuleFileNameA(NULL, path, MAX_PATH);
+        if (len == 0 || len >= MAX_PATH)
+            path[0] = '\0';
+        else if (char *slash = strrchr(path, '\\'))
+            slash[1] = '\0';
+    }
+    return path;
 }
 
 void InitFileLoader(PES::Version v) {
@@ -257,16 +290,13 @@ void InitFileLoader(PES::Version v) {
         FileSetLoadOverrideFilter = patch::RedirectCall(0x97797A, OnFileSetLoadOverrideFilter);
         patch::RedirectJump(0x5B8070, weFileBuildLoosePath);
         GameDirPath = (char const *)0xDB06A8;
-
-        gOrigLoadBodyModel = patch::SetPointer(0x8509D0 + 1, OnLoadBodyModel);
-
-        //patch::RedirectCall(0x61E569, OnLoadBallTexture);
-        //patch::RedirectCall(0x61E52A, OnClearBall);
-
-        //patch::RedirectCall(0x423F1E, OnGetNormalMapParams);
-
-        //patch::RedirectJump(0x424702, 0x424A8A);
-        //patch::RedirectJump(0x424575, 0x4245C0);
+        gRegisterArchive2 = patch::RedirectCall(0x977934, OnRegisterArchive2);
+        break;
+    case ID_PES6:
+        FileSetLoadOverrideFilter = patch::RedirectCall(0x7E58CA, OnFileSetLoadOverrideFilter);
+        patch::RedirectJump(0x65A230, weFileBuildLoosePath);
+        GameDirPath = ExeDirPath();
+        gRegisterArchive2 = patch::RedirectCall(0x7E5892, OnRegisterArchive2);
         break;
     }
 }
