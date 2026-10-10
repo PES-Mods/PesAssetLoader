@@ -44,4 +44,6 @@ public:
     SETTINGS_PARAMETER(bool,    TEXTURES,        "TEXTURES/ENABLED",  true);
     SETTINGS_PARAMETER(wstring, TEXTURES_FOLDER, "TEXTURES/FOLDER",   L"dat\\textures");
     SETTINGS_PARAMETER(bool,    TEXTURES_LOG,    "TEXTURES/LOG",      false);
+    // game texts from .tr files in plugins and dat\translation (and their subfolders)
+    SETTINGS_PARAMETER(bool,    TEXT_LOADER,     "TEXT_LOADER/ENABLED", true);
 };

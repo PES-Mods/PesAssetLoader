@@ -72,6 +72,7 @@
     <ClCompile Include="MemoryLimits.cpp" />
     <ClCompile Include="MemoryMonitor.cpp" />
     <ClCompile Include="settings\Settings.cpp" />
+    <ClCompile Include="TextLoader.cpp" />
     <ClCompile Include="TextureLimits.cpp" />
     <ClCompile Include="TextureReplacement.cpp" />
   </ItemGroup>

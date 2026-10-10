@@ -29,6 +29,7 @@ void InitMemoryLimits(PES::Version v);
 void InitTextureLimits(PES::Version v);
 void InitMemoryMonitor(PES::Version v);
 void InitTextureReplacement(PES::Version v);
+void InitTextLoader(PES::Version v);
 
 uintptr_t MakeTrampoline(uintptr_t addr, char const *prologue);
 

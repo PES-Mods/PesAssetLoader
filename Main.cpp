@@ -37,6 +37,7 @@ public:
             InitMemoryLimits(v);
             InitTextureLimits(v);
             InitTextureReplacement(v);
+            InitTextLoader(v);
             InitMemoryMonitor(v);
         }
     }
