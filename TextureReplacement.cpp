@@ -34,7 +34,7 @@ struct GameAddresses {
     uintptr_t deviceCreateCall;
     uintptr_t textureCopyCall;
 };
-constinit static GameAddresses gAddr = {};
+constinit GameAddresses gAddr = {};
 
 enum D3D8Method {
     D3D8_Release = 2, D3D8_Present = 15, D3D8_CreateTexture = 20, D3D8_SetTexture = 61,
@@ -121,53 +121,64 @@ struct Replacement {
     bool failed = false;
 };
 
-static vector<Replacement *> gReplacements;
-static unordered_set<string> gNamesSeen;
-static unordered_map<void *, Replacement *> gReplacementByGame;   // the game's D3D textures this frame
-static unordered_map<void *, void *> gGameByReplacement;
-static unordered_set<void *> gCheckedThisFrame;                     // bound this frame, not replaced
-static unsigned gRemaps = 0;
-static int gLanguage = -2;
-
+// Containers are made on first use (see Data): globals of this file may be constructed after the plugin's
+// global object in another file, whose constructor installs the hooks.
 struct TextureCopy { int source; void *texture; };
-static unordered_map<int, TextureCopy> gCopies;                     // new id -> source
-static SRWLOCK gCopiesLock = SRWLOCK_INIT;
-static uintptr_t oTextureCopy = 0;
+
+struct State {
+    vector<Replacement *> replacements;
+    unordered_set<string> namesSeen;
+    unordered_map<void *, Replacement *> replacementByGame;     // the game's D3D textures this frame
+    unordered_map<void *, void *> gameByReplacement;
+    unordered_set<void *> checkedThisFrame;                     // bound this frame, not replaced
+    unordered_map<int, TextureCopy> copies;                     // new id -> source
+    unordered_map<void *, string> names;                        // [TEXTURES] LOG
+    set<string> namesLogged;
+};
+
+State &Data() {
+    static State state;
+    return state;
+}
+
+unsigned gRemaps = 0;
+int gLanguage = -2;
+
+SRWLOCK gCopiesLock = SRWLOCK_INIT;
+uintptr_t oTextureCopy = 0;
 
 void *__cdecl OnTextureCopy(int source, int id) {
     void *texture = CallAndReturnDynGlobal<void *>(oTextureCopy, source, id);
     if (texture) {
         AcquireSRWLockExclusive(&gCopiesLock);
-        gCopies[id] = { source, texture };
+        Data().copies[id] = { source, texture };
         ReleaseSRWLockExclusive(&gCopiesLock);
     }
     return texture;
 }
 
 // [TEXTURES] LOG: named textures drawn without a file, once per name.
-static unordered_map<void *, string> gNames;
-static set<string> gNamesLogged;
 
 void MapNames() {
-    gNames.clear();
+    Data().names.clear();
     unordered_map<unsigned char *, char const *> byPlatform;
     ForEachNamedTexture([&](int id, char const *name) {
         if (unsigned char *pt = FindPlatformTexture(id)) {
             byPlatform.emplace(pt, name);
             if (void *d3d = *reinterpret_cast<void **>(pt + 8))
-                gNames.emplace(d3d, name);
+                Data().names.emplace(d3d, name);
         }
     });
     ForEachTexturePair([&](unsigned char *image, void *d3d) {
         auto it = byPlatform.find(image);
         if (it != byPlatform.end())
-            gNames.emplace(d3d, it->second);
+            Data().names.emplace(d3d, it->second);
     });
 }
 
 void LogUnreplaced(void *texture) {
-    auto it = gNames.find(texture);
-    if (it == gNames.end() || !gNamesLogged.insert(it->second).second)
+    auto it = Data().names.find(texture);
+    if (it == Data().names.end() || !Data().namesLogged.insert(it->second).second)
         return;
     SurfDesc d = {};
     D3D8Call(texture, D3D8Tex_GetLevelDesc, 0u, &d);
@@ -178,14 +189,14 @@ void ScanNames(void *dev) {
     int language = *reinterpret_cast<int *>(gAddr.language);
     if (language != gLanguage) {
         gLanguage = language;
-        for (Replacement *r : gReplacements) {
+        for (Replacement *r : Data().replacements) {
             if (r->texture && r->device == dev)
                 D3D8Call<unsigned long>(r->texture, D3D8_Release);
             delete r;
         }
-        gReplacements.clear();
-        gNamesSeen.clear();
-        gGameByReplacement.clear();
+        Data().replacements.clear();
+        Data().namesSeen.clear();
+        Data().gameByReplacement.clear();
     }
     wstring base = config().TEXTURES_FOLDER;
     if (!(base.size() > 1 && base[1] == L':'))
@@ -197,7 +208,7 @@ void ScanNames(void *dev) {
         folders.push_back(base + L"\\" + wchar_t(gAddr.languageLetters[language]));
     folders.push_back(base);
     ForEachNamedTexture([&](int id, char const *name) {
-        if (!gNamesSeen.insert(name).second)
+        if (!Data().namesSeen.insert(name).second)
             return;
         wstring file = wstring(name, name + strlen(name));
         for (wstring const &folder : folders) {
@@ -207,7 +218,7 @@ void ScanNames(void *dev) {
                     Replacement *r = new Replacement;
                     r->id = id;
                     r->path = path;
-                    gReplacements.push_back(r);
+                    Data().replacements.push_back(r);
                     return;
                 }
             }
@@ -218,27 +229,27 @@ void ScanNames(void *dev) {
 // The D3D textures the game draws a replaced texture with: its own (also with an upload pending: the game
 // uploads it before drawing, mostly into the same D3D texture), those of its copies, and pair cache entries.
 void MapReplacements() {
-    gReplacementByGame.clear();
-    if (gReplacements.empty())
+    Data().replacementByGame.clear();
+    if (Data().replacements.empty())
         return;
     unordered_map<unsigned char *, Replacement *> byPlatform;
     unordered_map<int, Replacement *> byId;
     auto add = [&](unsigned char *pt, Replacement *r) {
         byPlatform[pt] = r;
         if (void *d3d = *reinterpret_cast<void **>(pt + 8))
-            gReplacementByGame[d3d] = r;
+            Data().replacementByGame[d3d] = r;
     };
-    for (Replacement *r : gReplacements) {
+    for (Replacement *r : Data().replacements) {
         byId[r->id] = r;
         if (unsigned char *pt = FindPlatformTexture(r->id))
             add(pt, r);
     }
     AcquireSRWLockShared(&gCopiesLock);
-    for (auto const &copy : gCopies) {
+    for (auto const &copy : Data().copies) {
         int source = copy.second.source;
         for (int depth = 0; depth < 4 && !byId.count(source); depth++) {
-            auto it = gCopies.find(source);
-            if (it == gCopies.end())
+            auto it = Data().copies.find(source);
+            if (it == Data().copies.end())
                 break;
             source = it->second.source;
         }
@@ -254,7 +265,7 @@ void MapReplacements() {
     ForEachTexturePair([&](unsigned char *image, void *d3d) {
         auto it = byPlatform.find(image);
         if (it != byPlatform.end())
-            gReplacementByGame[d3d] = it->second;
+            Data().replacementByGame[d3d] = it->second;
     });
 }
 
@@ -379,19 +390,19 @@ void *CreateTextureFromDds(void *dev, wstring const &path) {
 }
 
 void *ReplacementTexture(void *dev, void *gameTexture) {
-    if (config().TEXTURES_LOG && !gReplacementByGame.count(gameTexture))
+    if (config().TEXTURES_LOG && !Data().replacementByGame.count(gameTexture))
         LogUnreplaced(gameTexture);
-    if (gReplacements.empty())
+    if (Data().replacements.empty())
         return nullptr;
-    auto it = gReplacementByGame.find(gameTexture);
-    if (it == gReplacementByGame.end()) {
+    auto it = Data().replacementByGame.find(gameTexture);
+    if (it == Data().replacementByGame.end()) {
         // a D3D texture made since Present (texture uploaded, copied or paired with a palette during the frame)
-        if (gRemaps >= 16 || !gCheckedThisFrame.insert(gameTexture).second)
+        if (gRemaps >= 16 || !Data().checkedThisFrame.insert(gameTexture).second)
             return nullptr;
         gRemaps++;
         MapReplacements();
-        it = gReplacementByGame.find(gameTexture);
-        if (it == gReplacementByGame.end())
+        it = Data().replacementByGame.find(gameTexture);
+        if (it == Data().replacementByGame.end())
             return nullptr;
     }
     Replacement *r = it->second;
@@ -407,21 +418,21 @@ void *ReplacementTexture(void *dev, void *gameTexture) {
         r->failed = !r->texture;
     }
     if (r->texture)
-        gGameByReplacement[r->texture] = gameTexture;
+        Data().gameByReplacement[r->texture] = gameTexture;
     return r->texture;
 }
 
 // ---------------------------------------------------------------------------------------------
 // device hooks (vtable entries, chained to whatever was there: PesFontHD hooks the same vtable)
 
-static void *oPresent = nullptr, *oSetTexture = nullptr;
-static uintptr_t oDeviceCreate = 0;
+void *oPresent = nullptr, *oSetTexture = nullptr;
+uintptr_t oDeviceCreate = 0;
 
 long __stdcall OnPresent(void *dev, void const *a, void const *b, void *c, void const *d) {
     static unsigned frame = 0;
     if (frame++ % 60 == 0)
         ScanNames(dev);         // name tables are added as modes load
-    gCheckedThisFrame.clear();
+    Data().checkedThisFrame.clear();
     gRemaps = 0;
     MapReplacements();
     if (config().TEXTURES_LOG)
@@ -482,8 +493,8 @@ void Install(PES::Version v) {
 
 // For other plugins (PesFontHD): the game texture a texture bound in its place stands for, else the texture.
 extern "C" __declspec(dllexport) void *PesAssetLoaderGameTexture(void *texture) {
-    auto it = TextureReplacement::gGameByReplacement.find(texture);
-    return it != TextureReplacement::gGameByReplacement.end() ? it->second : texture;
+    auto it = TextureReplacement::Data().gameByReplacement.find(texture);
+    return it != TextureReplacement::Data().gameByReplacement.end() ? it->second : texture;
 }
 
 void InitTextureReplacement(PES::Version v) {

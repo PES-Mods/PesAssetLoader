@@ -2,3 +2,5 @@
 .obj/
 output/
 Release/
+__pycache__/
+*.idc

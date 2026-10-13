@@ -40,13 +40,13 @@ struct GameAddresses {
     uintptr_t findFile;             // sub_59DB50(id): the string file holding the table of id
     uintptr_t findEntry;            // sub_59DB90(file, id): the entry of id in that file
 };
-constinit static GameAddresses gAddr = {};
+constinit GameAddresses gAddr = {};
 
 // sub_59DB50 and sub_59DB90, as they are (both games)
-static char const FIND_FILE_CODE[] =
+char const FIND_FILE_CODE[] =
     "A1 ?? ?? ?? ?? 57 8B 7C 24 08 C1 FF 10 85 C0 75 02 5F C3 53 56 8B 70 04 33 C9 85 F6 7E 16 8B 50 08 8B 1A "
     "8B 5B 04 66 39 7B 04 74 0F 41 83 C2 04 3B CE 7C ED 8B 40 10 85 C0 75 DA 5E 5B 5F C3";
-static char const FIND_ENTRY_CODE[] =
+char const FIND_ENTRY_CODE[] =
     "56 8B 74 24 08 33 C0 85 F6 74 56 8B 56 04 53 8B 5C 24 10 8B CB C1 F9 10 85 D2 57 7E 18 8B 76 08 8B 3E 8B 7F "
     "04 66 39 4F 04 74 0E 40 83 C6 04 3B C2 7C ED EB 04 8B 7C 24 10 3B C2 74 20 8B 0F 85 C9 8D 47 08 74 17 66 39 "
     "18 74 0E 49 83 C0 0C 85 C9 75 F3 5F 5B 33 C0 5E C3 85 C9 75 02 33 C0 5F 5B 5E C3";
@@ -67,9 +67,19 @@ struct Text {
     Entry entry[LANGUAGES + 1] = {};
 };
 
-static unordered_map<unsigned, unique_ptr<Text>> gTexts;
-static unordered_set<unsigned> gTables;
-static StringFile gEmptyFile = { -1, 0, nullptr, nullptr, nullptr };
+// Containers are made on first use: the plugin loads the texts from the constructor of a global object in
+// another file, which may run before this file's globals are constructed.
+unordered_map<unsigned, unique_ptr<Text>> &Texts() {
+    static unordered_map<unsigned, unique_ptr<Text>> texts;
+    return texts;
+}
+
+unordered_set<unsigned> &TablesWithTexts() {
+    static unordered_set<unsigned> tables;
+    return tables;
+}
+
+StringFile gEmptyFile = { -1, 0, nullptr, nullptr, nullptr };
 
 int Language() {
     int language = *reinterpret_cast<int *>(gAddr.language);
@@ -77,8 +87,8 @@ int Language() {
 }
 
 Entry *OurEntry(unsigned id, int language) {
-    auto it = gTexts.find(id);
-    if (it == gTexts.end())
+    auto it = Texts().find(id);
+    if (it == Texts().end())
         return nullptr;
     Text &t = *it->second;
     int slot = language != ALL && t.defined[language] ? language : ALL;
@@ -115,7 +125,7 @@ Entry *GameFindEntry(StringFile *f, unsigned id) {
 
 StringFile *__cdecl OnFindFile(unsigned id) {
     StringFile *f = GameFindFile(id);
-    return f || !gTables.count(id >> 16) ? f : &gEmptyFile;
+    return f || !TablesWithTexts().count(id >> 16) ? f : &gEmptyFile;
 }
 
 Entry *__cdecl OnFindEntry(StringFile *f, unsigned id) {
@@ -125,7 +135,7 @@ Entry *__cdecl OnFindEntry(StringFile *f, unsigned id) {
     Entry *ours = OurEntry(id, language);
     if (!ours)
         return f == &gEmptyFile ? nullptr : GameFindEntry(f, id);
-    Text &t = *gTexts[id];
+    Text &t = *Texts()[id];
     int slot = int(ours - t.entry);
     if (t.shortId[slot] < 0) {
         Entry *game = f == &gEmptyFile ? nullptr : GameFindEntry(f, id);
@@ -405,7 +415,7 @@ void LoadFile(path const &file, int &count) {
         if (text.size() >= 2 && text.front() == '"' && text.back() == '"')
             text = text.substr(1, text.size() - 2);
         text = GameText(text);
-        auto &t = gTexts[id];
+        auto &t = Texts()[id];
         if (!t)
             t = make_unique<Text>();
         for (int l = 0; l <= LANGUAGES; l++) {
@@ -415,7 +425,7 @@ void LoadFile(path const &file, int &count) {
             t->shortId[l] = shortId;
             t->text[l] = text;
         }
-        gTables.insert(id >> 16);
+        TablesWithTexts().insert(id >> 16);
         loaded++;
     }
     LOG(LOG_LEVEL_2, "texts: %S: %d", file.c_str(), loaded);
@@ -451,7 +461,7 @@ void LoadTexts() {
 
 // the entries of the game's format, pointing at our texts
 void BuildEntries() {
-    for (auto &it : gTexts) {
+    for (auto &it : Texts()) {
         Text &t = *it.second;
         for (int l = 0; l <= LANGUAGES; l++) {
             if (!t.defined[l])
@@ -486,7 +496,7 @@ void Install(PES::Version v) {
         return;
     }
     LoadTexts();
-    if (gTexts.empty())
+    if (Texts().empty())
         return;
     patch::RedirectJump(gAddr.findFile, OnFindFile);
     patch::RedirectJump(gAddr.findEntry, OnFindEntry);
