@@ -73,6 +73,7 @@
     <ClCompile Include="MemoryMonitor.cpp" />
     <ClCompile Include="settings\Settings.cpp" />
     <ClCompile Include="TextLoader.cpp" />
+    <ClCompile Include="FlagReplacer.cpp" />
     <ClCompile Include="TextureLimits.cpp" />
     <ClCompile Include="TextureReplacement.cpp" />
   </ItemGroup>
@@ -80,6 +81,7 @@
     <ClInclude Include="Config.hpp" />
     <ClInclude Include="log\Log.hpp" />
     <ClInclude Include="Main.hpp" />
+    <ClInclude Include="TextureLimits.hpp" />
     <ClInclude Include="pesapi\DebugPrint.h" />
     <ClInclude Include="pesapi\Error.h" />
     <ClInclude Include="pesapi\LicenseCheck.h" />

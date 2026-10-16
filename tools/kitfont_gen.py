@@ -29,7 +29,7 @@ from PIL import Image, ImageDraw, ImageFont
 from PyQt5.QtCore import QObject, QPointF, QRectF, QSettings, QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QBrush, QColor, QIcon, QImage, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QColorDialog, QComboBox,
-                             QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
+                             QDoubleSpinBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout,
                              QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
                              QPushButton, QScrollArea, QSizePolicy, QSpinBox, QSplitter, QStyleFactory, QTabWidget,
                              QToolButton, QVBoxLayout, QWidget)
@@ -56,7 +56,6 @@ KERNING = {
 NUMBER_TEXTURE = (256, 128)
 NAME_TEXTURE = (256, 64)
 LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ.'
-LETTER_GAP = 4      # pixels between letters of a name (the game uses 1..4, less for long names)
 
 
 def glyph_index(ch):
@@ -378,23 +377,33 @@ def number_cells(p):
 
 
 # --- letters ---
+#
+# The name font (256x64, PAL4) is read by the game as shading levels (DrawNameGlyph / QuantizeNameTexture):
+#   index 1..11  - color 1 with 1/11..11/11 coverage (11 = opaque),
+#   index 12..15 - opaque, color 2 share 25%, 50%, 75%, 100% (the rest color 1).
+# One-color fonts use only color 1 (0..11). Two-color fonts: color 1 = the border (outer part, with the soft
+# edge), color 2 = the main part (inner). The game draws every letter into a 32-bit buffer (coverages of the two
+# colors, bilinear, on an arc) and quantizes it back with the same meaning, so color 2 can't have a soft edge
+# against the transparent background: it must be surrounded by the border.
+
+LETTER_GLYPHS = [glyph_index(ch) for ch in LETTERS]
+
 
 class LetterParams(object):
     def __init__(self):
         self.font = ''
         self.scale = 4
         self.lowercase = False
-        self.size = 100.0          # % of the cell height for capital letters
-        self.width = 100.0         # % horizontal stretch
+        self.width = 100.0         # %: 100% = the widest letters at which all of them fit their cells
+        self.height = 100.0        # %: 100% = the letters fill the cell height
         self.weight = 0            # variable fonts: 'wght' axis value (0 = font default)
-        self.embolden = 0.0        # pixels of the original size
-        self.padding = 0.5
-        self.offset = 0.0          # vertical offset, pixels of the original size
-        self.wide = 'shrink'       # a letter wider than its cell: 'shrink' / 'squeeze' / 'clip'
-        self.fill = QColor(255, 255, 255)
-        self.border = True
-        self.border_color = QColor(0, 0, 0)
-        self.border_width = 1.0    # pixels of the original size
+        self.embolden = 0.0        # output pixels
+        self.padding = (0, 0, 0, 0)  # left, top, right, bottom: output pixels
+        self.halign = 'center'
+        self.valign = 'center'     # of the capital letter box (all letters share the baseline)
+        self.border = False
+        self.border_width = 2.0    # output pixels
+        self.small_dot = True      # '.' (a 4 pixel cell) doesn't limit the width: drawn smaller if it doesn't fit
 
 
 SUPERSAMPLE = 4
@@ -425,159 +434,280 @@ def make_font(path, size, weight):
     return font
 
 
-def render_glyph(font, ch, fill_stroke, border_stroke):
-    """Coverage masks (0..1) of the fill and of fill+border, cropped to the ink; baseline at row 'base'."""
+def render_glyph(font, ch):
+    """Coverage (0..1) of a letter, cropped to its ink horizontally; baseline at row 'base'."""
     size = font.size
-    pad = int(border_stroke + fill_stroke) + 4
-    w = int(size * 3) + 2 * pad
-    h = int(size * 2) + 2 * pad
-    base = int(size * 1.4) + pad
-    fill = Image.new('L', (w, h), 0)
-    ImageDraw.Draw(fill).text((pad, base), ch, font=font, fill=255, anchor='ls', stroke_width=int(round(fill_stroke)),
-                              stroke_fill=255)
-    outer = Image.new('L', (w, h), 0)
-    ImageDraw.Draw(outer).text((pad, base), ch, font=font, fill=255, anchor='ls',
-                               stroke_width=int(round(fill_stroke + border_stroke)), stroke_fill=255)
-    bbox = outer.getbbox()
+    w, h = int(size * 3), int(size * 2)
+    base = int(size * 1.4)
+    img = Image.new('L', (w, h), 0)
+    ImageDraw.Draw(img).text((size // 2, base), ch, font=font, fill=255, anchor='ls')
+    bbox = img.getbbox()
     if not bbox:
         return None
     x0, _, x1, _ = bbox
-    f = np.asarray(fill, np.float32)[:, x0:x1] / 255.0
-    o = np.asarray(outer, np.float32)[:, x0:x1] / 255.0
-    return f, np.maximum(o, f), base
+    return np.asarray(img, np.float32)[:, x0:x1] / 255.0, base
 
 
-def layout_letters(p):
-    """Fill and outer (fill+border) coverage of the name font texture, HxW floats."""
-    s = p.scale
-    ss = SUPERSAMPLE
-    k = s * ss                                  # pixels per original pixel while drawing
-    W, H = NAME_TEXTURE[0] * s, NAME_TEXTURE[1] * s
-    fill_cov = np.zeros((H * ss, W * ss), np.float32)
-    outer_cov = np.zeros((H * ss, W * ss), np.float32)
-    cell_h = 30 * k
-    pad = p.padding * k
-    # font size: the capital H as high as the cell (minus padding)
-    probe = make_font(p.font, 200, p.weight)
-    hb = probe.getbbox('H', anchor='ls')
-    cap = max(1, hb[3] - hb[1])
-    size = 200.0 * (cell_h - 2 * pad) * (p.size / 100.0) / cap
-    font = make_font(p.font, size, p.weight)
-    fill_stroke = p.embolden * k
-    border_stroke = p.border_width * k if p.border else 0
-    for ch in LETTERS:
-        gx, gy, gw, gh = GLYPHS[glyph_index(ch)]
-        cx, cy, cw, chh = gx * k, gy * k, gw * k, gh * k
-        draw_ch = ch.lower() if (p.lowercase and ch != '.') else ch
-        r = render_glyph(font, draw_ch, fill_stroke, border_stroke)
-        if r is None:
-            continue
-        f, o, base = r
-        # horizontal stretch
-        if p.width != 100:
-            nw = max(1, int(round(o.shape[1] * p.width / 100.0)))
-            f = np.asarray(Image.fromarray(f).resize((nw, f.shape[0]), Image.BILINEAR))
-            o = np.asarray(Image.fromarray(o).resize((nw, o.shape[0]), Image.BILINEAR))
-        inner_w = cw - 2 * pad
-        if o.shape[1] > inner_w and p.wide != 'clip':
-            if p.wide == 'shrink':
-                factor = inner_w / o.shape[1]
-                nw, nh = max(1, int(inner_w)), max(1, int(round(o.shape[0] * factor)))
-                f = np.asarray(Image.fromarray(f).resize((nw, nh), Image.BILINEAR))
-                o = np.asarray(Image.fromarray(o).resize((nw, nh), Image.BILINEAR))
-                base = base * factor
-            else:
-                nw = max(1, int(inner_w))
-                f = np.asarray(Image.fromarray(f).resize((nw, f.shape[0]), Image.BILINEAR))
-                o = np.asarray(Image.fromarray(o).resize((nw, o.shape[0]), Image.BILINEAR))
-        # baseline at the bottom of the cell (inside the padding)
-        x = int(round(cx + (cw - o.shape[1]) / 2))
-        y = int(round(cy + chh - pad - base + p.offset * k))
-        cell_f = np.zeros((chh, cw), np.float32)
-        cell_o = np.zeros((chh, cw), np.float32)
-        for src, dst in ((f, cell_f), (o, cell_o)):
-            h, w = src.shape
-            x0, y0 = max(0, x - cx), max(0, y - cy)
-            x1, y1 = min(cw, x - cx + w), min(chh, y - cy + h)
-            if x1 > x0 and y1 > y0:
-                dst[y0:y1, x0:x1] = src[y0 - (y - cy):y1 - (y - cy), x0 - (x - cx):x1 - (x - cx)]
-        fill_cov[cy:cy + chh, cx:cx + cw] = np.maximum(fill_cov[cy:cy + chh, cx:cx + cw], cell_f)
-        outer_cov[cy:cy + chh, cx:cx + cw] = np.maximum(outer_cov[cy:cy + chh, cx:cx + cw], cell_o)
-    # down to the texture size (box filter)
-    fill_cov = fill_cov.reshape(H, ss, W, ss).mean(axis=(1, 3))
-    outer_cov = outer_cov.reshape(H, ss, W, ss).mean(axis=(1, 3))
-    return fill_cov, outer_cov
+def stretch(mask, factor):
+    if abs(factor - 1) < 1e-4:
+        return mask
+    w = max(1, int(round(mask.shape[1] * factor)))
+    return np.asarray(Image.fromarray(mask).resize((w, mask.shape[0]), _RESAMPLING.LANCZOS), np.float32).clip(0, 1)
 
 
-def letter_indices(fill_cov, outer_cov, border):
-    """The game's meaning: 0..11 - fill opacity, 12..15 - opaque, 25%..100% border."""
-    a = np.clip(outer_cov, 0, 1)
-    idx = np.round(a * 11).astype(np.int32)
-    if border:
-        # a border can't be semi-transparent in the game: its outer edge is either the border or nothing
-        # (not the fill color, which would make a light halo around a dark border)
-        bfrac = np.where(a > 0, np.clip((a - fill_cov) / np.maximum(a, 1e-6), 0, 1), 0)
-        is_border = bfrac >= 0.125
-        idx = np.where(is_border, np.where(a >= 0.35, 11 + np.clip(np.round(bfrac * 4), 1, 4), 0), idx)
-    return idx.astype(np.uint8)
+def dilate(mask, radius):
+    """Grow a coverage mask by 'radius' pixels in every direction (a round pen, like a stroke)."""
+    if radius <= 0:
+        return mask
+    r = int(np.ceil(radius))
+    yy, xx = np.mgrid[-r:r + 1, -r:r + 1]
+    return ndimage.grey_dilation(mask, footprint=(xx * xx + yy * yy) <= radius * radius + 0.25)
 
 
-def letter_palette(fill, border):
-    pal = []
-    f = qcolor_rgb(fill)
-    b = qcolor_rgb(border)
-    for i in range(12):
-        pal.append((int(f[0] * 255 + 0.5), int(f[1] * 255 + 0.5), int(f[2] * 255 + 0.5), int(round(255 * i / 11))))
-    for i in range(1, 5):
-        c = f + (b - f) * (i / 4.0)
-        pal.append((int(c[0] * 255 + 0.5), int(c[1] * 255 + 0.5), int(c[2] * 255 + 0.5), 255))
-    return pal
-
-
-def sample_text(rgba, text, scale, gap):
-    """Draw 'text' from the texture the way the game places characters (straight, no arc)."""
-    text = text.upper()
-    advances = []
-    for i, ch in enumerate(text):
-        g = GLYPHS[glyph_index(ch)]
-        adv = KERNING.get((ch, text[i + 1]) if i + 1 < len(text) else None, g[2])
-        if i + 1 < len(text) and not ch.isdigit():
-            adv += gap
-        advances.append(adv)
-    width = max(1, sum(advances)) * scale
-    height = max([GLYPHS[glyph_index(ch)][3] for ch in text] or [1]) * scale
-    out = np.zeros((height, width, 4), np.uint8)
-    x = 0
-    for ch, adv in zip(text, advances):
-        gx, gy, gw, gh = (v * scale for v in GLYPHS[glyph_index(ch)])
-        if ch != ' ' and gw > 0:
-            part = rgba[gy:gy + gh, gx:gx + gw]
-            region = out[0:part.shape[0], x:x + part.shape[1]]
-            m = part[:, :, 3:4].astype(np.float32) / 255.0
-            region[:] = (part * m + region * (1 - m)).astype(np.uint8)
-            region[:, :, 3] = np.maximum(region[:, :, 3], part[:, :, 3])
-        x += adv * scale
+def letter_cells(p):
+    """Letter cells and their inner rects (minus the padding) in the name font texture: [(cell, inner)]."""
+    left, top, right, bottom = p.padding
+    out = []
+    for g in LETTER_GLYPHS:
+        gx, gy, gw, gh = (v * p.scale for v in GLYPHS[g])
+        out.append(((gx, gy, gw, gh), (gx + left, gy + top, gw - left - right, gh - top - bottom)))
     return out
 
 
+def ink_extent(glyphs):
+    """The highest ascent and the deepest descent (pixels from the baseline) of the rendered letters."""
+    ascent = descent = 0
+    for r in glyphs:
+        if r is None:
+            continue
+        mask, base = r
+        rows = np.nonzero(mask.max(axis=1) > 0)[0]
+        if len(rows):
+            ascent = max(ascent, base - rows[0])
+            descent = max(descent, rows[-1] + 1 - base)
+    return ascent, descent
+
+
+def layout_letters(p):
+    """Fill and outer (fill + border) coverage of the name font texture (HxW floats) and the letters that don't
+    fit (none, unless the cells are smaller than the border), the letter that limits the width and the W that keeps
+    the font's proportions.
+    Height: one font size for all letters, so they keep the same size and baseline; at H 100% the letters'
+    common extent (the highest ascent to the deepest descent of all of them: overshoots of round letters,
+    the tail of Q, ascenders and descenders of small letters) with the border fills the cell height inside the
+    padding. Width: one horizontal scale for all letters too; at W 100% the largest one at which every letter
+    fits its cell minus the padding (the letter that needs the most room limits it). Embolden and the border are added after the scaling, so they are as thick on every letter."""
+    s = p.scale
+    ss = SUPERSAMPLE
+    W, H = NAME_TEXTURE[0] * s, NAME_TEXTURE[1] * s
+    fill_cov = np.zeros((H * ss, W * ss), np.float32)
+    outer_cov = np.zeros((H * ss, W * ss), np.float32)
+    fill_stroke = p.embolden * ss
+    stroke = fill_stroke + (p.border_width * ss if p.border else 0)
+    pen = int(np.ceil(stroke)) + 1          # room for the strokes around a letter mask
+    left, top, right, bottom = (v * ss for v in p.padding)
+    inner_h = GLYPHS[LETTER_GLYPHS[0]][3] * s * ss - top - bottom
+    chars = [ch.lower() if (p.lowercase and ch != '.') else ch for ch in LETTERS]
+    rects = []
+    for cell, _ in letter_cells(p):
+        cx, cy, cw, chh = (v * ss for v in cell)
+        rects.append((cx + left, cy + top, cw - left - right, chh - top - bottom))
+
+    # the font size: the common extent of all the letters fills the available height (measured, then refined:
+    # the rasterizer rounds)
+    target = max(1.0, inner_h - 2 * pen) * min(p.height, 100.0) / 100.0
+    best = None
+    size = 200.0
+    for _ in range(8):
+        font = make_font(p.font, size, p.weight)
+        glyphs = [render_glyph(font, ch) for ch in chars]
+        ascent, descent = ink_extent(glyphs)
+        extent = max(1, ascent + descent)
+        if extent <= target and (best is None or font.size > best[0].size):
+            best = (font, glyphs, ascent, descent)
+            if target - extent < ss:
+                break
+        nxt = int(round(size * target / extent))
+        if nxt == font.size:
+            nxt += 1 if extent <= target else -1
+        if best is not None and nxt <= best[0].size:
+            break
+        size = max(1, nxt)
+    if best is None:
+        best = (font, glyphs, ascent, descent)
+    font, glyphs, ascent, descent = best
+    box_h = ascent + descent + 2 * pen
+
+    # the width: one horizontal scale for all letters; at W 100% the largest one at which every letter (with the
+    # strokes) fits its cell. Measured with the strokes and refined: they and the filter spread a bit.
+    def shapes(factor):
+        out = []
+        for r in glyphs:
+            if r is None:
+                out.append(None)
+                continue
+            body = np.pad(stretch(r[0], factor), pen)
+            f = dilate(body, fill_stroke)
+            o = np.maximum(dilate(body, stroke), f)
+            cols = np.nonzero(o.max(axis=0) > 0)[0]
+            out.append((f, o, cols) if len(cols) else None)
+        return out
+
+    # the letters that set the width ('.' can be left out: its cell is only 4 pixels wide)
+    sizing = [i for i, r in enumerate(glyphs) if r is not None and not (p.small_dot and LETTERS[i] == '.')]
+    widest = min(max(1.0, rects[i][2] - 2 * pen) / float(glyphs[i][0].shape[1]) for i in sizing)
+    factor = widest * min(p.width, 100.0) / 100.0
+    for _ in range(5):
+        shaped = shapes(factor)
+        worst = 1.0
+        for i in sizing:
+            (ix, iy, iw, ih), sh, r = rects[i], shaped[i], glyphs[i]
+            if sh is not None:
+                ow = sh[2][-1] + 1 - sh[2][0]
+                if ow > iw:
+                    body_w = r[0].shape[1] * factor
+                    worst = min(worst, max(0.05, (body_w - (ow - iw) - 0.5) / body_w))
+        if worst >= 1.0:
+            break
+        factor *= worst
+    limit = LETTERS[min(sizing, key=lambda i: max(1.0, rects[i][2] - 2 * pen) / glyphs[i][0].shape[1])]
+    bases = [r[1] if r is not None else 0 for r in glyphs]
+    smaller = []
+    if p.small_dot and glyphs[LETTERS.index('.')] is not None:
+        # '.' at the common scale; if it doesn't fit its cell, smaller (both directions, on the baseline)
+        i = LETTERS.index('.')
+        body0, base0 = glyphs[i]
+        iw = rects[i][2]
+        k = 1.0
+        for _ in range(6):
+            h = max(1, int(round(body0.shape[0] * k)))
+            w = max(1, int(round(body0.shape[1] * factor * k)))
+            scaled = np.asarray(Image.fromarray(body0).resize((w, h), _RESAMPLING.LANCZOS), np.float32).clip(0, 1)
+            body = np.pad(scaled, pen)
+            f = dilate(body, fill_stroke)
+            o = np.maximum(dilate(body, stroke), f)
+            cols = np.nonzero(o.max(axis=0) > 0)[0]
+            if not len(cols):
+                break
+            ow = cols[-1] + 1 - cols[0]
+            if ow <= iw:
+                break
+            k *= max(0.05, (w - (ow - iw) - 0.5) / float(w))
+        shaped[i] = (f, o, cols) if len(cols) else None
+        bases[i] = base0 * h / float(body0.shape[0])
+        if k < 1.0:
+            smaller.append('.')
+
+    clipped = []
+    for ch, (ix, iy, iw, ih), sh, r in zip(LETTERS, rects, shaped, glyphs):
+        if sh is None or iw <= 0 or ih <= 0:
+            continue
+        f, o, cols = sh
+        base0 = bases[LETTERS.index(ch)]
+        f, o = f[:, cols[0]:cols[-1] + 1], o[:, cols[0]:cols[-1] + 1]
+        base = base0 + pen
+        ow = o.shape[1]
+        if ow > iw or box_h > ih:
+            clipped.append(ch)
+        x = {'left': ix, 'right': ix + iw - ow}.get(p.halign, ix + (iw - ow) / 2.0)
+        box_top = {'top': iy, 'bottom': iy + ih - box_h}.get(p.valign, iy + (ih - box_h) / 2.0)
+        # the baseline of every letter at the same height: box top + strokes + the common ascent
+        x, y = int(round(x)), int(round(box_top + pen + ascent - base))
+        for src, dst in ((f, fill_cov), (o, outer_cov)):
+            inner_dst = np.zeros((ih, iw), np.float32)
+            h, w = src.shape
+            x0, y0 = max(0, x - ix), max(0, y - iy)
+            x1, y1 = min(iw, x - ix + w), min(ih, y - iy + h)
+            if x1 > x0 and y1 > y0:
+                inner_dst[y0:y1, x0:x1] = src[y0 - (y - iy):y1 - (y - iy), x0 - (x - ix):x1 - (x - ix)]
+            dst[iy:iy + ih, ix:ix + iw] = inner_dst
+    # down to the texture size (box filter)
+    fill_cov = fill_cov.reshape(H, ss, W, ss).mean(axis=(1, 3))
+    outer_cov = outer_cov.reshape(H, ss, W, ss).mean(axis=(1, 3))
+    info = {'clipped': clipped, 'limit': limit, 'proportions': 100.0 / widest, 'smaller': smaller}
+    return fill_cov, outer_cov, info
+
+
+def letter_indices(fill_cov, outer_cov, border):
+    """Coverages -> the game's levels: without a border 0..11 = the coverage of color 1 (the letter); with a
+    border color 1 is the border, 12..15 = the share of color 2 (the main part) where it covers >= 1/8 of the
+    pixel (the game's own threshold, 32/255)."""
+    outer = np.clip(outer_cov, 0, 1)
+    idx = np.round(outer * 11)
+    if border:
+        fill = np.clip(fill_cov, 0, outer)
+        share = fill / np.maximum(outer, 1e-6)
+        idx = np.where(fill >= 32 / 255.0, 11 + np.round(share * 4), idx)
+    return np.clip(idx, 0, 15).astype(np.uint8)
+
+
+# 12..15 of the one-color fonts of the game (unused: shades of red)
+UNUSED_SHADES = [(254, 192, 192, 255), (254, 128, 128, 255), (254, 64, 64, 255), (255, 0, 0, 255)]
+
+
+def letter_palette(color1, color2=None):
+    """0..11: color 1 with 0..100% opacity (index 0 keeps the color: it's what blends in at the edges),
+    12..15: opaque, color 1 -> color 2 (25%..100%); without color 2 (one-color font) the game's shades of red."""
+    c1 = qcolor_rgb(color1)
+    pal = []
+    for i in range(12):
+        pal.append(tuple(int(v * 255 + 0.5) for v in c1) + (int(round(255 * i / 11.0)),))
+    if color2 is None:
+        return pal + UNUSED_SHADES
+    c2 = qcolor_rgb(color2)
+    for i in range(1, 5):
+        c = c1 + (c2 - c1) * (i / 4.0)
+        pal.append(tuple(int(v * 255 + 0.5) for v in c) + (255,))
+    return pal
+
+
+def name_advances(text, scale, max_width):
+    """The game's letter placement (DrawKitName): kerning pair or the glyph width, plus a gap after every
+    letter but the last (not after digits); the gap is 4 pixels, less (down to 1) for long names. With HD fonts
+    PesAssetLoader scales the tables and the gap: 4 x scale, less (1 pixel steps) down to 1 x scale."""
+    widths = []
+    for i, ch in enumerate(text):
+        pair = (ch, text[i + 1]) if i + 1 < len(text) else None
+        widths.append(KERNING.get(pair, GLYPHS[glyph_index(ch)][2]) * scale)
+    gaps = sum(1 for i, ch in enumerate(text[:-1]) if not ch.isdigit())
+    gap = 4 * scale
+    while gap > scale and sum(widths) + gap * gaps > max_width:
+        gap -= 1
+    advances = [w + (gap if i + 1 < len(text) and not ch.isdigit() else 0) for i, (ch, w) in
+                enumerate(zip(text, widths))]
+    return advances, gap
+
+
+def name_texture(indices, text, scale):
+    """The player name texture (256x64) the way the game makes it, without the arc: every letter is added to a
+    buffer of the two coverages (index -> coverages, as DrawNameGlyph does) and the buffer is quantized back
+    (QuantizeNameTexture, integer math). Returns (indices, letter rects, gap)."""
+    text = text.upper()
+    W, H = NAME_TEXTURE[0] * scale, NAME_TEXTURE[1] * scale
+    a = np.zeros((H, W), np.int32)
+    b = np.zeros((H, W), np.int32)
+    level = np.arange(16)
+    cov1 = np.where(level > 11, 255 - 255 * (level - 11) // 4, 255 * level // 11)
+    cov2 = np.where(level > 11, 255 * (level - 11) // 4, 0)
+    advances, gap = name_advances(text, scale, 230 * scale)
+    x = (W - sum(advances)) // 2
+    rects = []
+    for ch, adv in zip(text, advances):
+        gx, gy, gw, gh = (v * scale for v in GLYPHS[glyph_index(ch)])
+        if ch != ' ' and gw > 0:
+            rects.append((x, 0, gw, gh))
+            x0, x1 = max(0, x), min(W, x + gw)
+            if x1 > x0:
+                part = indices[gy:gy + min(gh, H), gx + x0 - x:gx + x1 - x]
+                a[:part.shape[0], x0:x1] += cov1[part]
+                b[:part.shape[0], x0:x1] += cov2[part]
+        x += adv
+    a, b = np.minimum(a, 255), np.minimum(b, 255)
+    out = np.where(b >= 32, 4 * b // np.maximum(a + b, 1) + 11, 11 * a // 255)
+    return np.clip(out, 0, 15).astype(np.uint8), rects, gap
+
+
 # --- Qt helpers ---
-
-def checker_pixmap(rgba, max_w, max_h):
-    h, w = rgba.shape[:2]
-    img = QImage(rgba.tobytes(), w, h, w * 4, QImage.Format_RGBA8888).copy()
-    k = min(max_w / w, max_h / h) if w and h else 1
-    k = max(k, 0.05)
-    tw, th = max(1, int(w * k)), max(1, int(h * k))
-    pm = QPixmap(tw, th)
-    p = QPainter(pm)
-    cell = 8
-    for y in range(0, th, cell):
-        for x in range(0, tw, cell):
-            p.fillRect(x, y, cell, cell, QColor(204, 204, 204) if (x // cell + y // cell) % 2 else QColor(240, 240, 240))
-    p.drawImage(pm.rect(), img)
-    p.end()
-    return pm
-
 
 _CHECKER = {}
 DARK_THEME = [False]
@@ -719,6 +849,47 @@ class ImageView(QWidget):
         e.accept()
 
 
+class ViewBar(QHBoxLayout):
+    """The bar above the results: zoom, cell bounds, transparent colors (regenerates), status text."""
+
+    def __init__(self, view, regenerate):
+        super(ViewBar, self).__init__()
+        self.view = view
+        zout = QPushButton('-')
+        zin = QPushButton('+')
+        z100 = QPushButton('100%')
+        for w in (zout, zin):
+            w.setFixedWidth(28)
+        zout.clicked.connect(lambda: view.step(-1))
+        zin.clicked.connect(lambda: view.step(1))
+        z100.clicked.connect(lambda: view.setZoom(1.0))
+        for w in (zout, zin, z100):
+            w.setToolTip('Zoom (or the mouse wheel over a picture)')
+        self.zoom_label = QLabel()
+        self.zoom_label.setMinimumWidth(40)
+        self.zoom_label.setAlignment(Qt.AlignCenter)
+        self.bounds = QCheckBox('Cell bounds')
+        self.bounds.setToolTip('Draw the cells (solid) and the padding (dashed)')
+        self.bounds.toggled.connect(view.setBounds)
+        self.hidden = QCheckBox('Transparent colors')
+        self.hidden.setToolTip('Show the colors of the transparent pixels (alpha ignored): what blends in at the '
+                               'edges')
+        self.hidden.toggled.connect(regenerate)
+        self.status = QLabel()
+        for w in (zout, self.zoom_label, zin, z100):
+            self.addWidget(w)
+        self.addSpacing(16)
+        self.addWidget(self.bounds)
+        self.addWidget(self.hidden)
+        self.addSpacing(16)
+        self.addWidget(self.status, 1)
+        view.changed.connect(self._update)
+        self._update()
+
+    def _update(self):
+        self.zoom_label.setText('%d%%' % round(self.view.zoom * 100))
+
+
 class PaletteView(QWidget):
     """The 16 palette entries as 8x2 swatches."""
     CELL = 14
@@ -744,30 +915,6 @@ class PaletteView(QWidget):
         for i in range(3):
             p.drawLine(0, i * c, 8 * c, i * c)
         p.end()
-
-
-class PreviewLabel(QLabel):
-    def __init__(self, min_h=120):
-        super(PreviewLabel, self).__init__()
-        self.setAlignment(Qt.AlignCenter)
-        self.setMinimumSize(160, min_h)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.setStyleSheet('border: 1px solid #999;')
-        self._rgba = None
-
-    def setRgba(self, rgba):
-        self._rgba = rgba
-        self._refresh()
-
-    def resizeEvent(self, e):
-        super(PreviewLabel, self).resizeEvent(e)
-        self._refresh()
-
-    def _refresh(self):
-        if self._rgba is None or not self._rgba.size:
-            self.clear()
-            return
-        self.setPixmap(checker_pixmap(self._rgba, self.width() - 4, self.height() - 4))
 
 
 class DigitList(QListWidget):
@@ -1022,48 +1169,20 @@ class NumbersTab(QWidget):
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
-        bar = QHBoxLayout()
-        zout = QPushButton('-')
-        zin = QPushButton('+')
-        z100 = QPushButton('100%')
-        for w in (zout, zin):
-            w.setFixedWidth(28)
-        zout.clicked.connect(lambda: self.view.step(-1))
-        zin.clicked.connect(lambda: self.view.step(1))
-        z100.clicked.connect(lambda: self.view.setZoom(1.0))
-        for w in (zout, zin, z100):
-            w.setToolTip('Zoom (or the mouse wheel over a picture)')
-        self.zoom_label = QLabel()
-        self.zoom_label.setMinimumWidth(40)
-        self.zoom_label.setAlignment(Qt.AlignCenter)
-        self.bounds = QCheckBox('Cell bounds')
-        self.bounds.setToolTip('Draw the digit cells (solid) and the padding (dashed)')
-        self.bounds.toggled.connect(self.view.setBounds)
-        self.hidden = QCheckBox('Transparent colors')
-        self.hidden.setToolTip('Show the colors of the transparent pixels (alpha ignored): what blends in at the '
-                               'edges')
-        self.hidden.toggled.connect(self.schedule)
-        self.status = QLabel()
-        for w in (zout, self.zoom_label, zin, z100):
-            bar.addWidget(w)
-        bar.addSpacing(16)
-        bar.addWidget(self.bounds)
-        bar.addWidget(self.hidden)
-        bar.addSpacing(16)
-        bar.addWidget(self.status, 1)
-        rl.addLayout(bar)
+        self.bar = ViewBar(self.view, self.schedule)
+        rl.addLayout(self.bar)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         content = QWidget()
         cl = QVBoxLayout(content)
         self.outputs = [
-            NumberOutput('Number Font (shirt numbers)', ('#ffffff', '#000000', '#808080')),
-            NumberOutput('Palette 1 (shorts numbers)', ('#ffffff', '#000000', '#808080')),
-            NumberOutput('Palette 2 (shorts numbers)', ('#000000', '#ffffff', '#808080')),
+            NumberOutput('Shirt number', ('#ffffff', '#000000', '#808080')),
+            NumberOutput('Home shorts number palette', ('#ffffff', '#000000', '#808080')),
+            NumberOutput('Away shorts number palette', ('#000000', '#ffffff', '#808080')),
         ]
         self.views = []
-        names = ('number_font', 'number_palette1', 'number_palette2')
+        names = ('number_shirt', 'number_shorts_home', 'number_shorts_away')
         for out, name in zip(self.outputs, names):
             view = ImageView(self.view)
             self.views.append(view)
@@ -1092,6 +1211,7 @@ class NumbersTab(QWidget):
             samples.addWidget(v, 0, Qt.AlignTop)
         sw = QWidget()
         sw.setLayout(samples)
+        cl.addSpacing(24)
         cl.addLayout(self._row(sw, sample_box))
         cl.addStretch(1)
         scroll.setWidget(content)
@@ -1116,9 +1236,7 @@ class NumbersTab(QWidget):
         self.pad_same.toggled.connect(lambda on: self._padding_changed(self.pad[0]))
         self.sample_text.textChanged.connect(self.schedule)
         self.auto.toggled.connect(lambda on: self.schedule() if on else None)
-        self.view.changed.connect(self._update_zoom)
         self._update_size()
-        self._update_zoom()
 
     @staticmethod
     def _row(view, panel):
@@ -1127,9 +1245,6 @@ class NumbersTab(QWidget):
         row.addWidget(panel, 0, Qt.AlignTop)
         row.addStretch(1)
         return row
-
-    def _update_zoom(self):
-        self.zoom_label.setText('%d%%' % round(self.view.zoom * 100))
 
     def _transparent_changed(self, value):
         self.ncolors.setMaximum(16 - value)
@@ -1293,7 +1408,7 @@ class NumbersTab(QWidget):
     def generate(self):
         files = [self.list.item(i).data(Qt.UserRole) for i in range(min(10, self.list.count()))]
         if not files:
-            self.status.setText('Add the digit pictures.')
+            self.bar.status.setText('Add the digit pictures.')
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
@@ -1310,17 +1425,16 @@ class NumbersTab(QWidget):
                 pal = number_palette(entries, out.currentMode(), out.colors(), intensity)
                 out.indices = indices
                 out.palette = pal
-                shown = [(r, g, b, 255) for r, g, b, _ in pal] if self.hidden.isChecked() else pal
+                shown = [(r, g, b, 255) for r, g, b, _ in pal] if self.bar.hidden.isChecked() else pal
                 view.setRgba(to_rgba_image(indices, shown))
                 view.setCells([c for c, _ in cells], [i for _, i in cells])
                 sample.setRgba(to_rgba_image(sample_indices, shown) if text else None)
-                sample.setCells(sample_cells)
                 out.palette_view.setPalette16(pal + [(0, 0, 0, 0)] * (16 - len(pal)))
             hidden = sum(1 for _, a in entries if a == 0)
-            self.status.setText('%d x %d, %d colors + %d transparent' % (indices.shape[1], indices.shape[0],
+            self.bar.status.setText('%d x %d, %d colors + %d transparent' % (indices.shape[1], indices.shape[0],
                                                                        len(entries) - hidden, hidden))
         except Exception as e:
-            self.status.setText('Error: %s' % e)
+            self.bar.status.setText('Error: %s' % e)
         finally:
             QApplication.restoreOverrideCursor()
 
@@ -1343,12 +1457,50 @@ class NumbersTab(QWidget):
 
 # --- Letters tab ---
 
+class LetterOutput(QGroupBox):
+    """The colors and the files of the name font."""
+    changed = pyqtSignal()
+
+    def __init__(self):
+        super(LetterOutput, self).__init__('Name Font')
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Maximum)
+        self.setFixedWidth(PANEL_WIDTH)
+        lay = QVBoxLayout(self)
+        g = QGridLayout()
+        g.setSpacing(4)
+        self.fill = ColorButton('#ffffff')
+        self.border = ColorButton('#000000')
+        self.border_label = QLabel('Border:')
+        g.addWidget(QLabel('Main:'), 0, 0)
+        g.addWidget(self.fill, 0, 1)
+        g.addWidget(self.border_label, 1, 0)
+        g.addWidget(self.border, 1, 1)
+        g.setColumnStretch(2, 1)
+        for b in (self.fill, self.border):
+            b.changed.connect(self.changed)
+        lay.addLayout(g)
+        self.palette_view = PaletteView()
+        self.palette_view.setToolTip('0..11: color 1 with 0..100% opacity; 12..15: color 1 -> color 2 (opaque).\n'
+                                     'Color 1 is the main color of a one-color font, the border of a two-color '
+                                     'one (then color 2 is the main color).')
+        lay.addWidget(self.palette_view)
+        self.save_image = QPushButton('Save Image')
+        self.save_palette = QPushButton('Save Palette')
+        lay.addWidget(self.save_image)
+        lay.addWidget(self.save_palette)
+        self.indices = None
+        self.palette = None
+
+    def setBorder(self, on):
+        self.border_label.setVisible(on)
+        self.border.setVisible(on)
+
+
 class LettersTab(QWidget):
     def __init__(self, settings):
         super(LettersTab, self).__init__()
         self.settings = settings
-        self.indices = None
-        self.palette = None
+        self.view = ViewState()
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.setInterval(250)
@@ -1358,132 +1510,202 @@ class LettersTab(QWidget):
         outer = QHBoxLayout(self)
         outer.addWidget(split)
 
+        # left: the shared settings
         left = QWidget()
-        form = QFormLayout(left)
-        fr = QHBoxLayout()
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(0, 0, 0, 0)
+        box = QGroupBox('Settings')
+        g = QGridLayout(box)
+        g.setVerticalSpacing(4)
+        g.setColumnStretch(1, 1)
         self.font_path = QLineEdit()
         self.font_path.setReadOnly(True)
+        self.font_path.setMinimumWidth(260)
         browse = QPushButton('Font...')
         browse.clicked.connect(self._browse)
-        fr.addWidget(self.font_path, 1)
-        fr.addWidget(browse)
-        form.addRow('Font file:', fr)
+        grid_row(g, 0, 'Font file:', self.font_path, browse)
         self.scale = scale_combo()
+        self.scale.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         self.size_label = QLabel()
-        sr = QHBoxLayout()
-        sr.addWidget(self.scale)
-        sr.addWidget(self.size_label, 1)
-        form.addRow('Output size:', sr)
-        self.case = QComboBox()
-        self.case.addItem('Capital letters', False)
-        self.case.addItem('Small letters', True)
-        form.addRow('Letters:', self.case)
-        self.size = spin(20, 200, 100, 1, 0, ' %')
-        form.addRow('Size (capital height):', self.size)
-        self.width = spin(30, 200, 100, 1, 0, ' %')
-        form.addRow('Width:', self.width)
+        grid_row(g, 1, 'Output size:', self.scale, self.size_label)
+        self.case = combo((('Capital letters', False), ('Small letters', True)))
+        grid_row(g, 2, 'Letters:', self.case)
+        self.lw = int_spin(10, 100, 100, ' %')
+        self.lh = int_spin(10, 100, 100, ' %')
+        grid_row(g, 3, 'Letter size:', QLabel('W'), self.lw, QLabel('H'), self.lh,
+                 tooltip='One scale for all letters (the same height and baseline, the same width scale). '
+                         'H 100%: the letters from the highest to the lowest point of any of them (round '
+                         'overshoots, the tail of Q, ascenders and descenders of small letters) with the border '
+                         'fill the cell height inside the padding. W 100%: the widest letters at which every '
+                         'letter fits its cell. No letter is ever cut. The status bar shows the W that keeps the '
+                         'proportions of the font.')
+        self.small_dot = QCheckBox("Smaller '.' if it doesn't fit")
+        self.small_dot.setChecked(True)
+        self.small_dot.setToolTip("The cell of '.' is only 4 pixels wide (x the output size): with a border, a dot at "
+                                  "the letters' scale rarely fits it and then limits the width of all letters. "
+                                  "On: '.' doesn't limit the width; if it doesn't fit, only the dot is drawn smaller "
+                                  "(both directions, on the baseline).")
+        grid_row(g, 4, '', self.small_dot)
         self.weight = QSpinBox()
         self.weight.setRange(0, 1000)
         self.weight.setSingleStep(50)
         self.weight.setSpecialValueText('font default')
-        form.addRow('Weight (variable fonts):', self.weight)
-        self.embolden = spin(0, 4, 0, 0.25, 2, ' px')
-        form.addRow('Embolden (original px):', self.embolden)
-        self.padding = spin(0, 6, 0.5, 0.25, 2, ' px')
-        form.addRow('Padding (original px):', self.padding)
-        self.offset = spin(-10, 10, 0, 0.25, 2, ' px')
-        form.addRow('Vertical offset (original px):', self.offset)
-        self.wide = QComboBox()
-        self.wide.addItem('Shrink', 'shrink')
-        self.wide.addItem('Squeeze', 'squeeze')
-        self.wide.addItem('Clip', 'clip')
-        form.addRow('Too wide for its cell:', self.wide)
-        self.fill = ColorButton('#ffffff')
-        form.addRow('Fill color:', self.fill)
-        br = QHBoxLayout()
+        self.weight.setEnabled(False)
+        grid_row(g, 6, 'Weight:', self.weight, tooltip='The weight of a variable font')
+        self.embolden = spin(0, 32, 0, 0.5, 1, ' px')
+        grid_row(g, 7, 'Embolden:', self.embolden, tooltip='Thicker letters: output pixels')
+        self.halign = combo((('Left', 'left'), ('Center', 'center'), ('Right', 'right')), 'center')
+        self.valign = combo((('Top', 'top'), ('Center', 'center'), ('Bottom', 'bottom')), 'center')
+        grid_row(g, 8, 'Alignment:', self.halign, self.valign,
+                 tooltip='Horizontal: every letter in its cell. Vertical: the capital letter box (all letters '
+                         'keep the same baseline).')
+        self.pad = [int_spin(0, 128, 0) for _ in range(4)]
+        self.pad_same = QCheckBox('All')
+        self.pad_same.setChecked(True)
+        grid_row(g, 9, 'Padding:', self.pad_same, *self.pad,
+                 tooltip='Left, top, right, bottom: output pixels kept transparent inside every letter cell. '
+                         'All: the same padding on all 4 sides.')
         self.border = QCheckBox('Border')
-        self.border.setChecked(True)
-        self.border_color = ColorButton('#000000')
-        self.border_width = spin(0.25, 6, 1, 0.25, 2, ' px')
-        br.addWidget(self.border)
-        br.addWidget(self.border_color)
-        br.addWidget(self.border_width)
-        form.addRow('Border:', br)
-        self.sample_text = QLineEdit('PLAYER NAME')
-        form.addRow('Sample:', self.sample_text)
-        gr = QHBoxLayout()
+        self.border_width = spin(0.5, 64, 2, 0.5, 1, ' px')
+        grid_row(g, 10, '', self.border, self.border_width,
+                 tooltip='A two-color font: the border is color 1 (indices 0..11, with the soft edge), the main '
+                         'part color 2 (12..15). Width: output pixels.')
         self.auto = QCheckBox('Auto-Generate')
         self.auto.setChecked(True)
         gen = QPushButton('Generate')
         gen.clicked.connect(self.generate)
-        gr.addWidget(self.auto)
-        gr.addWidget(gen)
-        form.addRow(gr)
-        note = QLabel('Every letter has a fixed cell in the game (e.g. I: 6, W: 20 original pixels wide); '
-                      'letters are fitted into their cells. Indices: 0..11 fill opacity, 12..15 border.')
+        reset = QPushButton('Reset')
+        reset.setToolTip('Reset the settings to the defaults (the font file and the colors are kept)')
+        reset.clicked.connect(self.reset_settings)
+        grid_row(g, 11, '', self.auto, gen, reset)
+        ll.addWidget(box)
+        note = QLabel('The game reads the name font as levels: 0..11 - color 1 (0..100% opacity), 12..15 - opaque, '
+                      'color 1 -> color 2. One-color font: color 1 = the letters. Two-color font (border): '
+                      'color 1 = the border, color 2 = the main part; the main part must not touch the '
+                      'transparent background (12..15 have no soft edge).')
         note.setWordWrap(True)
-        form.addRow(note)
-        self.status = QLabel()
-        self.status.setWordWrap(True)
-        form.addRow(self.status)
+        ll.addWidget(note)
+        ll.addStretch(1)
         split.addWidget(left)
 
+        # right: the result
         right = QWidget()
         rl = QVBoxLayout(right)
-        self.preview = PreviewLabel(160)
-        self.sample = PreviewLabel(60)
-        self.palette_view = PreviewLabel(24)
-        self.palette_view.setMaximumHeight(28)
-        rl.addWidget(self.preview, 3)
-        rl.addWidget(self.sample, 1)
-        rl.addWidget(self.palette_view)
-        b = QHBoxLayout()
-        si = QPushButton('Save Image')
-        si.clicked.connect(lambda: self._save(False))
-        sp = QPushButton('Save Palette')
-        sp.clicked.connect(lambda: self._save(True))
-        b.addStretch(1)
-        b.addWidget(si)
-        b.addWidget(sp)
-        rl.addLayout(b)
+        rl.setContentsMargins(0, 0, 0, 0)
+        self.bar = ViewBar(self.view, self.schedule)
+        rl.addLayout(self.bar)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        cl = QVBoxLayout(content)
+        self.output = LetterOutput()
+        self.output.changed.connect(self.schedule)
+        self.output.save_image.clicked.connect(lambda: self._save(False))
+        self.output.save_palette.clicked.connect(lambda: self._save(True))
+        self.preview = ImageView(self.view)
+        cl.addLayout(NumbersTab._row(self.preview, self.output))
+        sample_box = QGroupBox('In-game name')
+        sample_box.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Maximum)
+        sample_box.setFixedWidth(PANEL_WIDTH)
+        sl = QVBoxLayout(sample_box)
+        self.sample_text = QLineEdit('PLAYER')
+        self.sample_text.setMaxLength(24)
+        sl.addWidget(self.sample_text)
+        self.sample_info = QLabel()
+        self.sample_info.setWordWrap(True)
+        sl.addWidget(self.sample_info)
+        self.sample = ImageView(self.view)
+        cl.addSpacing(24)
+        cl.addLayout(NumbersTab._row(self.sample, sample_box))
+        cl.addStretch(1)
+        scroll.setWidget(content)
+        rl.addWidget(scroll, 1)
         split.addWidget(right)
-        split.setStretchFactor(1, 3)
+        split.setStretchFactor(0, 0)
+        split.setStretchFactor(1, 1)
 
-        for w in (self.scale, self.case, self.wide):
+        for w in (self.scale, self.case, self.halign, self.valign):
             w.currentIndexChanged.connect(self.schedule)
-        for w in (self.size, self.width, self.embolden, self.padding, self.offset, self.border_width, self.weight):
+        for w in (self.embolden, self.border_width, self.weight):
             w.valueChanged.connect(self.schedule)
-        for w in (self.fill, self.border_color):
-            w.changed.connect(self.schedule)
-        self.border.toggled.connect(self.schedule)
+        self.small_dot.toggled.connect(self.schedule)
+        for w in (self.lw, self.lh):
+            w.valueChanged.connect(self.schedule)
+        for w in self.pad:
+            w.valueChanged.connect(lambda v, w=w: self._padding_changed(w))
+        self.pad_same.toggled.connect(lambda on: self._padding_changed(self.pad[0]))
+        self.border.toggled.connect(self._border_toggled)
         self.sample_text.textChanged.connect(self.schedule)
         self.auto.toggled.connect(lambda on: self.schedule() if on else None)
+        self._border_toggled(False)
         self._update_size()
 
     def _update_size(self):
         k = self.scale.currentData()
         self.size_label.setText('%d x %d' % (NAME_TEXTURE[0] * k, NAME_TEXTURE[1] * k))
 
+    def _border_toggled(self, on):
+        self.border_width.setEnabled(on)
+        self.output.setBorder(on)
+        self.schedule()
+
+    def _padding_changed(self, changed):
+        if self.pad_same.isChecked():
+            for w in self.pad:
+                if w is not changed:
+                    w.blockSignals(True)
+                    w.setValue(changed.value())
+                    w.blockSignals(False)
+        self.schedule()
+
     def schedule(self):
         self._update_size()
         if self.auto.isChecked():
             self.timer.start()
 
+    def reset_settings(self):
+        p = LetterParams()
+        widgets = (self.scale, self.case, self.lw, self.lh, self.embolden, self.halign, self.valign, self.pad_same,
+                   self.border, self.border_width, self.small_dot) + tuple(self.pad)
+        for w in widgets:
+            w.blockSignals(True)
+        self.scale.setCurrentIndex(self.scale.findData(p.scale))
+        self.case.setCurrentIndex(self.case.findData(p.lowercase))
+        self.lw.setValue(int(p.width))
+        self.lh.setValue(int(p.height))
+        self.embolden.setValue(p.embolden)
+        self.halign.setCurrentIndex(self.halign.findData(p.halign))
+        self.valign.setCurrentIndex(self.valign.findData(p.valign))
+        self.pad_same.setChecked(True)
+        for w, v in zip(self.pad, p.padding):
+            w.setValue(v)
+        self.border.setChecked(p.border)
+        self.border_width.setValue(p.border_width)
+        self.small_dot.setChecked(p.small_dot)
+        for w in widgets:
+            w.blockSignals(False)
+        self._border_toggled(p.border)
+
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(self, 'Font', self.settings.value('font_dir', ''),
                                               'Fonts (*.ttf *.otf *.ttc)')
-        if not path:
-            return
-        self.settings.setValue('font_dir', os.path.dirname(path))
+        if path:
+            self.settings.setValue('font_dir', os.path.dirname(path))
+            self.setFont(path)
+
+    def setFont(self, path):
         self.font_path.setText(path)
         axes = font_axes(path)
         wght = [a for a in axes if str(a.get('name', '')).lower().strip("b'") in ('weight', 'wght')]
+        self.weight.blockSignals(True)
         self.weight.setEnabled(bool(wght))
         if wght:
             self.weight.setRange(int(wght[0]['minimum']), int(wght[0]['maximum']))
             self.weight.setValue(int(wght[0].get('default', wght[0]['minimum'])))
         else:
+            self.weight.setRange(0, 1000)
             self.weight.setValue(0)
+        self.weight.blockSignals(False)
         self.schedule()
 
     def params(self):
@@ -1491,43 +1713,66 @@ class LettersTab(QWidget):
         p.font = self.font_path.text()
         p.scale = self.scale.currentData()
         p.lowercase = self.case.currentData()
-        p.size = self.size.value()
-        p.width = self.width.value()
+        p.width = self.lw.value()
+        p.height = self.lh.value()
         p.weight = self.weight.value() if self.weight.isEnabled() else 0
         p.embolden = self.embolden.value()
-        p.padding = self.padding.value()
-        p.offset = self.offset.value()
-        p.wide = self.wide.currentData()
-        p.fill = self.fill.color()
+        p.padding = tuple(w.value() for w in self.pad)
+        p.halign = self.halign.currentData()
+        p.valign = self.valign.currentData()
         p.border = self.border.isChecked()
-        p.border_color = self.border_color.color()
         p.border_width = self.border_width.value()
+        p.small_dot = self.small_dot.isChecked()
         return p
 
     def generate(self):
         p = self.params()
         if not p.font or not os.path.isfile(p.font):
-            self.status.setText('Select a font file.')
+            self.bar.status.setText('Select a font file.')
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            fill_cov, outer_cov = layout_letters(p)
-            self.indices = letter_indices(fill_cov, outer_cov, p.border)
-            self.palette = letter_palette(p.fill, p.border_color if p.border else p.fill)
-            rgba = to_rgba_image(self.indices, self.palette)
-            self.preview.setRgba(rgba)
-            self.sample.setRgba(sample_text(rgba, self.sample_text.text() or 'A', p.scale, LETTER_GAP))
-            self.palette_view.setRgba(np.array(self.palette, np.uint8).reshape(1, 16, 4))
-            self.status.setText('%d x %d' % (self.indices.shape[1], self.indices.shape[0]))
+            fill_cov, outer_cov, info = layout_letters(p)
+            indices = letter_indices(fill_cov, outer_cov, p.border)
+            out = self.output
+            out.indices = indices
+            out.palette = (letter_palette(out.border.color(), out.fill.color()) if p.border
+                           else letter_palette(out.fill.color()))
+            shown = [(r, g, b, 255) for r, g, b, _ in out.palette] if self.bar.hidden.isChecked() else out.palette
+            self.preview.setRgba(to_rgba_image(indices, shown))
+            cells = letter_cells(p)
+            self.preview.setCells([c for c, _ in cells], [i for _, i in cells])
+            text = ''.join(ch for ch in self.sample_text.text().upper() if ch in LETTERS + ' _')
+            if text:
+                sample, rects, gap = name_texture(indices, text, p.scale)
+                # one line: the letters' rows of the name texture
+                self.sample.setRgba(to_rgba_image(sample[:GLYPHS[LETTER_GLYPHS[0]][3] * p.scale], shown))
+                self.sample_info.setText('The player\'s %dx%d name texture as the game makes it (no arc): kerning '
+                                         'or the cell width + a %d px gap; the levels are added up and quantized '
+                                         'again like in the game.' % (NAME_TEXTURE[0] * p.scale,
+                                                                      NAME_TEXTURE[1] * p.scale, gap))
+            else:
+                self.sample.setRgba(None)
+            out.palette_view.setPalette16(out.palette)
+            natural = int(round(info['proportions']))
+            status = '%d x %d; width limited by %s; the font\'s proportions: W %d%%%s' % (
+                indices.shape[1], indices.shape[0], info['limit'], natural,
+                ' (wider than the cells allow)' if natural > 100 else '')
+            if info['smaller']:
+                status += "; '.' drawn smaller"
+            if info['clipped']:
+                status += '; cells too small for the border (cut): ' + ' '.join(info['clipped'])
+            self.bar.status.setText(status)
         except Exception as e:
-            self.status.setText('Error: %s' % e)
+            self.bar.status.setText('Error: %s' % e)
         finally:
             QApplication.restoreOverrideCursor()
 
     def _save(self, palette_only):
-        if self.palette is None:
+        out = self.output
+        if out.palette is None:
             self.generate()
-        if self.palette is None:
+        if out.palette is None:
             return
         name = 'name_font_palette.png' if palette_only else 'name_font.png'
         path, _ = QFileDialog.getSaveFileName(self, 'Save', os.path.join(self.settings.value('save_dir', ''), name),
@@ -1536,9 +1781,9 @@ class LettersTab(QWidget):
             return
         self.settings.setValue('save_dir', os.path.dirname(path))
         if palette_only:
-            save_palette_png(path, self.palette)
+            save_palette_png(path, out.palette)
         else:
-            save_png4(path, self.indices, self.palette)
+            save_png4(path, out.indices, out.palette)
 
 
 # --- theme ---

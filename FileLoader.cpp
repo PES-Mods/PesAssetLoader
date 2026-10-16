@@ -232,7 +232,7 @@ static void OnFileSetLoadOverrideFilter(void *) {
             AssetsFolders().push_back(p);
     }
     if (AssetsFolders().empty())
-        AssetsFolders().push_back("dat");
+        AssetsFolders().push_back("dat\\assets\\files");
     for (auto &f : AssetsFolders()) {
         while (!f.empty() && (f.back() == '\\' || f.back() == '/'))
             f.pop_back();

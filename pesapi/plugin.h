@@ -86,6 +86,7 @@ inline uintptr_t GetEntryPoint() {
 inline Version DetectAppVersion() {
     switch (GetEntryPoint()) {
     case 0x89E231: // PES5, WE9
+    case 0xACDFE0: // PES5, WE9 Kitserver
         return ID_PES5;
     //case 0x899F29: // WE9LE
     //    return ID_WE9LE;
@@ -93,9 +94,10 @@ inline Version DetectAppVersion() {
         return (plugin::patch::GetUChar(0x489240) == 'W') ? ID_SETTINGS_WE9 : ID_SETTINGS_PES5;
     //case 0x434856: // settings WE9LE
     //    return ID_SETTINGS_WE9LE;
-    case 0x41A3CE:
+    case 0x41A3CE: // PES 6
+    case 0xB7CEE0: // PES 6 Kitserver
         return ID_PES6;
-    case 0x4176CB:
+    case 0x4176CB: // settings PES 6
         return ID_SETTINGS_PES6;
     }
     return VERSION_UNKNOWN;
@@ -103,6 +105,10 @@ inline Version DetectAppVersion() {
 
 inline bool IsWE9() {
     return plugin::patch::GetUChar(0xACE4B8) == 'W';
+}
+
+inline bool IsKitserverInstalled() {
+    return GetEntryPoint() == 0xACDFE0 || GetEntryPoint() == 0xB7CEE0;
 }
 
 inline Version GetAppVersion() {

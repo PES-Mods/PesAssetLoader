@@ -18,7 +18,7 @@
 // the game's entry only when that one is replaced too (else a translation would turn back into the original
 // where it is too long); "ID/SHORT" sets it.
 //
-// .tr files: plugins\**\*.tr, then dat\translation\**\*.tr (by path; a later file wins), text in UTF-8 (with or
+// .tr files: plugins\**\*.tr, then dat\assets\translation\**\*.tr (by path; a later file wins), text in UTF-8 (with or
 // without BOM), UTF-16LE with BOM, or the system code page:
 //
 //   ; comment (also # and //, at the start of a line)
@@ -436,7 +436,7 @@ void BuildEntries();
 
 void LoadTexts() {
     int files = 0, count = 0;
-    for (wchar_t const *folder : { L"plugins", L"dat\\translation" }) {
+    for (wchar_t const *folder : { L"plugins", L"dat\\assets\\translation" }) {
         path base = PES::GameDirPath(folder);
         error_code ec;
         if (!is_directory(base, ec))

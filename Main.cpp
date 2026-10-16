@@ -36,6 +36,7 @@ public:
             InitFileLoader(v);
             InitMemoryLimits(v);
             InitTextureLimits(v);
+            InitFlagReplacer(v);
             InitTextureReplacement(v);
             InitTextLoader(v);
             InitMemoryMonitor(v);

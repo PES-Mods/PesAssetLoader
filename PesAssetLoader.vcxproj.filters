@@ -4,6 +4,7 @@
     <ClCompile Include="Main.cpp" />
     <ClCompile Include="FileLoader.cpp" />
     <ClCompile Include="MemoryLimits.cpp" />
+    <ClCompile Include="FlagReplacer.cpp" />
     <ClCompile Include="TextureLimits.cpp" />
     <ClCompile Include="MemoryMonitor.cpp" />
     <ClCompile Include="TextLoader.cpp" />
@@ -61,6 +62,7 @@
       <Filter>pesapi</Filter>
     </ClInclude>
     <ClInclude Include="Main.hpp" />
+    <ClInclude Include="TextureLimits.hpp" />
     <ClInclude Include="settings\Settings.h">
       <Filter>settings</Filter>
     </ClInclude>

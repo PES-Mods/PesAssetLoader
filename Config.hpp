@@ -20,6 +20,7 @@ public:
     SETTINGS_PARAMETER(string, PATH10,     "FILE_LOADER/PATH10",     "");
     SETTINGS_PARAMETER(int,    LOD_MAIN_TEXTURE, "TEXTURE_LIMITS/LOD_MAIN_TEXTURE", 1);
     SETTINGS_PARAMETER(string, MIPMAP_LOD_BIAS,  "TEXTURE_LIMITS/MIPMAP_LOD_BIAS",  "");
+    SETTINGS_PARAMETER(int,    KIT_TEXT_MIPMAPS, "TEXTURE_LIMITS/KIT_TEXT_MIPMAPS", 1);
     SETTINGS_PARAMETER(string, ARENA_MP,   "MEMORY_LIMITS/ARENA_MP", "");
     SETTINGS_PARAMETER(string, ARENA_1,    "MEMORY_LIMITS/ARENA_1",  "");
     SETTINGS_PARAMETER(string, ARENA_2,    "MEMORY_LIMITS/ARENA_2",  "");
@@ -44,8 +45,19 @@ public:
     // game textures from DDS/PNG files named like the textures inside the .txs files (FOLDER\<name>.dds|.png,
     // FOLDER\<language letter>\<name>.dds|.png first); LOG lists named textures drawn without a file (once per name, LOG_LEVEL >= 1)
     SETTINGS_PARAMETER(bool,    TEXTURES,        "TEXTURES/ENABLED",  true);
-    SETTINGS_PARAMETER(wstring, TEXTURES_FOLDER, "TEXTURES/FOLDER",   L"dat\\textures");
+    SETTINGS_PARAMETER(wstring, TEXTURES_FOLDER, "TEXTURES/FOLDER",   L"dat\\assets\\textures");
     SETTINGS_PARAMETER(bool,    TEXTURES_LOG,    "TEXTURES/LOG",      false);
-    // game texts from .tr files in plugins and dat\translation (and their subfolders)
+    // country flags, club badges and patterns from PNG/DDS files: FOLDER\folder_0|folder_1|folder_2\<flag id>.png|.dds
+    // (<flag id>@<w>x<h>.png|.dds: only for the flags of that size); SCALE: times the game's size (power of two);
+    // ASPECT: width factor of the flags and badges (1: as they are; the game's own pictures are about 0.87 times as
+    // wide as they look, so 0.87 for pictures that are not squeezed yet)
+    SETTINGS_PARAMETER(bool,    FLAGS,           "FLAGS/ENABLED",     true);
+    SETTINGS_PARAMETER(wstring, FLAGS_FOLDER,    "FLAGS/FOLDER",      L"dat\\assets\\flags");
+    SETTINGS_PARAMETER(int,     FLAGS_SCALE,     "FLAGS/SCALE",       4);
+    SETTINGS_PARAMETER(string,  FLAGS_ASPECT,    "FLAGS/ASPECT",      "1.0");
+    SETTINGS_PARAMETER(bool,    FLAGS_MIPMAPS,   "FLAGS/MIPMAPS",     true);
+    SETTINGS_PARAMETER(string,  FLAGS_FILTER,    "FLAGS/FILTER",      "lanczos");
+    SETTINGS_PARAMETER(int,     FLAGS_CACHE_MB,  "FLAGS/CACHE_MB",    96);
+    // game texts from .tr files in plugins and dat\assets\translation (and their subfolders)
     SETTINGS_PARAMETER(bool,    TEXT_LOADER,     "TEXT_LOADER/ENABLED", true);
 };

@@ -1,6 +1,7 @@
-#include "Main.hpp"
+#include "TextureLimits.hpp"
 #include <set>
 #include <deque>
+#include <algorithm>
 
 // Textures of any resolution and format.
 //
@@ -13,39 +14,6 @@
 // with another size/format (decal stamping).
 namespace TextureLimits {
 
-#pragma pack(push, 1)
-struct Texture {
-    uint32_t signature;
-    uint32_t count;
-    uint32_t totalSize;
-    uint32_t texNo;
-    uint16_t texelsOffset;
-    uint16_t clutOffset;
-    uint16_t width;
-    uint16_t height;
-    uint8_t textureBufferWidth;
-    uint8_t texelFormat;      // 0 - RGBA8888, 2 - RGBA5551, 19 - PAL8, 20 - PAL4
-    uint8_t log2Width;
-    uint8_t log2Height;
-    uint8_t hasClut;
-    uint8_t clutFormat;
-    uint8_t clutWidth;
-    uint8_t clutHeight;
-    uint32_t texelsSizeQwc;   // size of the first mip level in 16-byte units
-    uint32_t clutSizeQwc;
-    uint16_t copyBufferWidth;
-    uint16_t copyBufferHeight;
-    uint8_t copyTextureBufferWidth;
-    uint8_t copyBufferFormat;
-    uint16_t vramPages_levels; // number of additional mip levels in the upper 4 bits
-    int16_t mipLevelOffsets[6];
-    uint8_t platformFormat;   // 0 - texelFormat is used, otherwise DXT1/DXT3/DXT5/...
-    uint8_t platformFlags;
-    uint8_t pad[2];
-};
-static_assert(sizeof(Texture) == 64, "Texture header size");
-
-#pragma pack(pop)
 
 // Natural alignment (as in the game): refCount is followed by 2 bytes of padding
 struct PlatformTexture {
@@ -63,9 +31,6 @@ struct PlatformTexture {
 static_assert(offsetof(PlatformTexture, pD3DTexture) == 0x08, "PlatformTexture layout");
 static_assert(offsetof(PlatformTexture, bCreated) == 0x15, "PlatformTexture layout");
 static_assert(offsetof(PlatformTexture, pTexture) == 0x18, "PlatformTexture layout");
-
-const uint8_t TEX_PAL8 = 19;
-const uint8_t TEX_PAL4 = 20;
 
 struct GameAddresses {
     uintptr_t GetPlatformTexture;  // PlatformTexture *(int texId), increments refCount
@@ -297,7 +262,7 @@ static void RemoveClone(Texture *owner) {
 static void MirrorToOwner(Texture *owner, Texture *clone);
 
 // Make 'clone' the texture of 'owner' (it replaces the previous clone, if any)
-static void RegisterClone(Texture *owner, Texture *clone, char const *reason) {
+void RegisterClone(Texture *owner, Texture *clone, char const *reason) {
     MirrorToOwner(owner, clone);
     Texture *old = nullptr;
     auto it = Clones().find(owner);
@@ -372,7 +337,7 @@ static unsigned int ClutPos(unsigned int index) {
 
 // --- paletted texel access (level 0, linear layout) ---
 
-static uint8_t *Texels(Texture *t) {
+uint8_t *Texels(Texture *t) {
     return (uint8_t *)t + t->texelsOffset;
 }
 
@@ -514,9 +479,6 @@ static void ScaledStamp(Texture *dst, float dstScale, Texture *src, float srcSca
 }
 
 // --- 32-bit compositing ---
-// Platform format 6: D3DFMT_A8R8G8B8 texels (B, G, R, A in memory, alpha 0..255), uploaded as they are
-const uint8_t PLATFORM_ARGB8888 = 6;
-
 static uint32_t Ps2Alpha(uint32_t a) {
     return a >= 0x80 ? 255 : a * 2;
 }
@@ -547,7 +509,7 @@ static void DecodeDxtColors(uint8_t const *block, uint32_t colors[4], bool fourC
 
 // Level 0 of 't' as A8R8G8B8 pixels (empty if the format is not supported). With 'indexZeroTransparent'
 // palette index 0 is transparent (the game doesn't copy it when it stamps a texture over another one).
-static vector<uint32_t> DecodeTexture(Texture *t, bool indexZeroTransparent) {
+vector<uint32_t> DecodeTexture(Texture *t, bool indexZeroTransparent) {
     unsigned int w = t->width, h = t->height;
     vector<uint32_t> out;
     uint8_t const *texels = Texels(t);
@@ -632,7 +594,7 @@ static vector<uint32_t> DecodeTexture(Texture *t, bool indexZeroTransparent) {
 }
 
 // One-level A8R8G8B8 texture with the header of 'owner' (id, etc.)
-static Texture *CreateArgbTexture(Texture *owner, unsigned int width, unsigned int height) {
+Texture *CreateArgbTexture(Texture *owner, unsigned int width, unsigned int height) {
     // mip levels down to 4 pixels (the renderer walks them in 16-byte units)
     unsigned int levels = 1;
     while (levels < 16 && (width >> levels) && (height >> levels) && ((width >> levels) * (height >> levels)) >= 4)
@@ -667,7 +629,7 @@ static Texture *CreateArgbTexture(Texture *owner, unsigned int width, unsigned i
 }
 
 // Make mip levels 1..n of an A8R8G8B8 texture from level 0 (2x2 average)
-static void BuildArgbMips(Texture *t) {
+void BuildArgbMips(Texture *t) {
     auto src = (uint32_t *)Texels(t);
     unsigned int w = t->width, h = t->height;
     for (unsigned int level = 1; level < NumLevels(t); level++) {
@@ -938,7 +900,7 @@ static void OnStampIndexedDecal(Texture *dst, Texture *src, int indexOffset, int
     if (!IsPaletted(target) || !IsPaletted(s) || target->texelFormat != s->texelFormat)
         return;
     ScaledStamp(target, (float)target->width / dst->width, s, 1.0f, indexOffset, x, y, rect);
-    // the mip levels are made by the renderer from the stamped picture
+    // the stored mip levels don't have the decal any more: the renderer makes them (see WantsGeneratedMips)
     target->vramPages_levels &= 0x0FFF;
     CallDynGlobal(gAddr.TexTBufRemove, dst->texNo);
 }
@@ -1023,6 +985,60 @@ static Texture *OnGetTextureAssetIfLoaded(int texId) {
     return t;
 }
 
+Texture *FindTexture(int texId) {
+    return CallAndReturnDynGlobal<Texture *>(oGetTextureAssetIfLoaded, texId);
+}
+
+void AddOwnTexture(Texture *t) {
+    CallAndReturnDynGlobal<int>(oTexAddOriginal(), t);
+}
+
+void *AcquireTextureRef(int texId) {
+    return AcquirePlatformTexture(texId);
+}
+
+void ReleaseTextureRef(void *ref) {
+    if (ref)
+        ReleasePlatformTexture((PlatformTexture *)ref);
+}
+
+void DeleteOwnTexture(Texture *t) {
+    CallAndReturnDynGlobal<int>(oTexDelOriginal(), t);
+    FreeClone(t);
+}
+
+// Copies made at run time: TextureCopy(source id, new id) copies the game's texture of the source id under a
+// new id (e.g. the emblems on the stadium screens). The copy of a texture with a clone gets a copy of the clone;
+// copies are used elsewhere (often in 3D), so a 32-bit clone without mip levels gets them in the copy.
+static uintptr_t oTextureCopy;
+
+static Texture *OnTextureCopy(int sourceId, int newId) {
+    auto copy = CallAndReturnDynGlobal<Texture *>(oTextureCopy, sourceId, newId);
+    if (!copy)
+        return copy;
+    Texture *bound = CallAndReturnDynGlobal<Texture *>(oGetTextureAssetIfLoaded, sourceId);
+    if (!IsClone(bound))
+        return copy;
+    Texture *clone;
+    if (bound->platformFormat == PLATFORM_ARGB8888 && NumLevels(bound) == 1) {
+        clone = CreateArgbTexture(copy, bound->width, bound->height);
+        if (clone) {
+            memcpy(Texels(clone), Texels(bound), (size_t)bound->width * bound->height * 4);
+            BuildArgbMips(clone);
+        }
+    }
+    else
+        clone = CreateClone(bound, (uint32_t)newId);
+    if (!clone)
+        return copy;
+    // the copy is not added yet (the game adds it next): TexAdd binds the clone
+    Clones()[copy] = clone;
+    Owners()[clone] = copy;
+    LOG(LOG_LEVEL_2, "[TextureLimits] copy of texture %d as %d: %ux%u (format %u/%u, %u levels)", sourceId, newId,
+        clone->width, clone->height, clone->texelFormat, clone->platformFormat, NumLevels(clone));
+    return copy;
+}
+
 // A new texture at this address: a shadow of a previous one is not valid anymore
 static uintptr_t oTextureCreate;
 
@@ -1049,6 +1065,30 @@ static Texture *TextureOfId(int texId) {
     Texture *t = pt->pTexture;
     ReleasePlatformTexture(pt);
     return t;
+}
+
+// The gap between the letters of a name: DrawKitName starts with 4 pixels and makes it smaller (down to 1) while
+// the name is wider than the limit. With a bigger font it's scaled too (4 * scale down to 1 * scale, in 1 pixel
+// steps): the code is patched for the time of drawing.
+//   mov edi, 4 / add esp, 4 / mov [esp+34h], edi / lea ecx, [eax+edx*4] / lea esp, [esp]
+//   loop: cmp [ebp+1Ch], ecx / jge done / dec edi / add ecx, esi / cmp edi, 1 / jg loop
+static char const kNameGapCode[] = "BF 04 00 00 00 83 C4 04 89 7C 24 34 8D 0C 90 8D 64 24 00 39 4D 1C 7D 08 4F 03 CE 83 FF 01";
+constinit static uintptr_t gNameGapCode = 0;
+
+static void SetNameGapScale(unsigned int scale) {
+    if (!gNameGapCode)
+        return;
+    patch::SetUInt(gNameGapCode + 1, 4 * scale);              // the first gap
+    if (scale == 1) {
+        patch::SetBytes(gNameGapCode + 12, "8D 0C 90 8D 64 24 00");
+    }
+    else {
+        // the width with that gap: lea ecx, [eax+edx*4] -> imul ecx, edx, 4 * scale / add ecx, eax
+        char code[32];
+        snprintf(code, sizeof(code), "6B CA %02X 03 C8 90 90", 4 * scale);
+        patch::SetBytes(gNameGapCode + 12, code);
+    }
+    patch::SetUChar(gNameGapCode + 29, (unsigned char)scale); // the smallest gap
 }
 
 static int OnDrawKitName(int levels, int targetId, char *name, int fontId, int arc, int maxWidth) {
@@ -1084,7 +1124,9 @@ static int OnDrawKitName(int levels, int targetId, char *name, int fontId, int a
         kerning[i + 2] = (uint8_t)min(255L, lround(kerning[i + 2] * scale));
     gHdTextureIds[0] = fontId;
     gHdTextureIds[1] = targetId;
+    SetNameGapScale((unsigned int)std::clamp(lround(scale), 1L, 31L));
     int result = CallAndReturnDynGlobal<int>(oDrawKitName, levels, targetId, name, fontId, arc, (int)lround(maxWidth * scale));
+    SetNameGapScale(1);
     gHdTextureIds[0] = gHdTextureIds[1] = -1;
     memcpy(glyphs, savedGlyphs, sizeof(savedGlyphs));
     memcpy(kerning, savedKerning, kerningSize);
@@ -1138,7 +1180,56 @@ static void InstallMipBias(uintptr_t defaultBias, uintptr_t modelBiasCall) {
     LOG(LOG_LEVEL_1, "[TextureLimits] mip level bias: %.2f (models: %+.2f)", bias, gMipBiasShift);
 }
 
+// --- generated mip levels ---
+// The renderer gives a D3D texture only the mip levels stored in the texture: its switch for a full chain (a byte
+// read by GetForceSingleMip) is never set. For the textures below it is set while their D3D texture is created:
+// the stored levels are uploaded and D3DX makes the rest from the last one (box filter), in colors after the
+// palette is applied, so it also works for the texture + palette pairs of kit numbers and names.
+constinit static uintptr_t gMipChainFlag = 0;
+constinit static bool gKitTextMips = false;
+static uintptr_t oCreateD3DTexture;
+
+static bool WantsGeneratedMips(Texture const *t) {
+    if (!t || NumLevels(t) > 1)
+        return false;
+    uint32_t id = t->texNo;
+    // player names and numbers: drawn by the game in one level
+    if (gKitTextMips && ((id >= 9250 && id < 9340) || (id >= 9400 && id < 9489)))
+        return true;
+    // a replaced kit (e.g. with decals stamped in its resolution: the stored levels are dropped) and the own
+    // boot textures, when they come without mip levels
+    return (id >= 4000 && id < 4004 && IsClone((Texture *)t)) || (id >= kBootTextureId && id < kBootTextureId + kBootTypes);
+}
+
+static void *__fastcall OnCreateD3DTexture(PlatformTexture *pt, void *, int palette) {
+    auto &flag = *(uint8_t *)gMipChainFlag;
+    bool force = pt && WantsGeneratedMips(pt->pTexture) && !flag;
+    if (force)
+        flag = 1;
+    void *result = CallMethodAndReturnDynGlobal<void *>(oCreateD3DTexture, pt, palette);
+    if (force)
+        flag = 0;
+    return result;
+}
+
+static void InstallGeneratedMips(uintptr_t createD3DTexture, char const *prologue, uintptr_t flag) {
+    oCreateD3DTexture = MakeTrampoline(createD3DTexture, prologue);
+    if (!oCreateD3DTexture) {
+        LOG(LOG_LEVEL_1, "[TextureLimits] unexpected code at %X, mip levels are not generated", createD3DTexture);
+        return;
+    }
+    gMipChainFlag = flag;
+    gKitTextMips = config().KIT_TEXT_MIPMAPS != 0;
+    patch::RedirectJump(createD3DTexture, OnCreateD3DTexture);
+}
+
 // --- install ----------------------------------------------------------------------------------------
+
+constinit static bool gHooksInstalled = false;
+
+bool HooksInstalled() {
+    return gHooksInstalled;
+}
 
 // Verify the prologues and create trampolines; a hook is installed only if all of them are fine
 static uintptr_t Detour(uintptr_t addr, char const *prologue, bool &ok) {
@@ -1154,8 +1245,8 @@ static uintptr_t Detour(uintptr_t addr, char const *prologue, bool &ok) {
 
 void Install(PES::Version v) {
     // function addresses, in the order of 'hooks' below
-    uintptr_t const kPES5[] = { 0x828F30, 0x828F10, 0x828DD0, 0x826C80, 0x828DB0, 0x8D57A0, 0x8D57D0, 0x825D50, 0x826660, 0x825C50, 0x8262A0, 0x8D5600, 0x8D9AE0, 0x8D9B40, 0xACADA0, 0x8D7C80, 0x825B40, 0x852350 };
-    uintptr_t const kPES6[] = { 0x8D1A60, 0x8D1A40, 0x8D1900, 0x8CF9E0, 0x8D18E0, 0x87A810, 0x87A840, 0x8CEAA0, 0x8CF3B0, 0x8CE9A0, 0x8CEFF0, 0x87A670, 0xB41D70, 0xB41DD0, 0xB64320, 0x87C100, 0x8CE890, 0x8B7030 };
+    uintptr_t const kPES5[] = { 0x828F30, 0x828F10, 0x828DD0, 0x826C80, 0x828DB0, 0x8D57A0, 0x8D57D0, 0x825D50, 0x826660, 0x825C50, 0x8262A0, 0x8D5600, 0x8D9AE0, 0x8D9B40, 0xACADA0, 0x8D7C80, 0x825B40, 0x852350, 0x828910 };
+    uintptr_t const kPES6[] = { 0x8D1A60, 0x8D1A40, 0x8D1900, 0x8CF9E0, 0x8D18E0, 0x87A810, 0x87A840, 0x8CEAA0, 0x8CF3B0, 0x8CE9A0, 0x8CEFF0, 0x87A670, 0xB41D70, 0xB41DD0, 0xB64320, 0x87C100, 0x8CE890, 0x8B7030, 0x8D1440 };
     uintptr_t const *a;
     switch (v.id()) {
     case ID_PES5:
@@ -1163,14 +1254,18 @@ void Install(PES::Version v) {
         a = kPES5;
         gBootAddr = { 0x8545E0, 0x854600, 0x8547B0 };
         gGlyphTables = { 0xC2E640, 0xC2E5E0 };
+        gNameGapCode = 0x85242D;
         InstallMipBias(0xB0E0C0, 0x41AA7D);
+        InstallGeneratedMips(0x42D300, "6A FF 68 F6 C9 AC 00", 0xE9551C);
         break;
     case ID_PES6:
         gAddr = { 0x406740, 0x4064B0, 0x409F80, 0x409E70, 0x405BD0 };
         a = kPES6;
         gBootAddr = { 0x8AE130, 0x8AE150, 0x8AE320 };
         gGlyphTables = { 0xD3C2A0, 0xD3C240 };
+        gNameGapCode = 0x8B710D;
         InstallMipBias(0xBC4920, 0x87B77E);
+        InstallGeneratedMips(0x40C270, "6A FF 68 66 BB B7 00", 0xF863A0);
         break;
     default:
         return;
@@ -1195,6 +1290,7 @@ void Install(PES::Version v) {
         { a[15], OnGetTexMatrix,          "8B 44 24 0C 8B 4C 24 04",    &oGetTexMatrix },
         { a[16], OnTextureCreate,         "8B 44 24 14 8B 4C 24 08 8B 54 24 04", &oTextureCreate },
         { a[17], OnDrawKitName,           "55 8B EC 83 E4 F0 81 EC A4 00 00 00", &oDrawKitName },
+        { a[18], OnTextureCopy,           "8B 44 24 04 55 8B 6C 24 0C", &oTextureCopy },
     };
     // verify everything first, so we never end up with a part of the hooks installed
     bool ok = true;
@@ -1204,7 +1300,12 @@ void Install(PES::Version v) {
         return;
     for (auto const &h : hooks)
         patch::RedirectJump(h.addr, h.hook);
+    gHooksInstalled = true;
     gLodMainTexture = config().LOD_MAIN_TEXTURE != 0;
+    if (patch::GetBytes(gNameGapCode, (sizeof(kNameGapCode) + 1) / 3) != kNameGapCode) {
+        LOG(LOG_LEVEL_1, "[TextureLimits] unexpected code at %X, the gap of HD kit names is not scaled", gNameGapCode);
+        gNameGapCode = 0;
+    }
 }
 
 }
