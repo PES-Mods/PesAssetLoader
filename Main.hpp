@@ -31,8 +31,14 @@ void InitMemoryMonitor(PES::Version v);
 void InitTextureReplacement(PES::Version v);
 void InitFlagReplacer(PES::Version v);
 void InitTextLoader(PES::Version v);
+void InitUiInspector(PES::Version v);
+void InitPlayerPhotos(PES::Version v);
+
+// TextLoader: the game's TeamName(team, kind, defaults) without the names of the .tr files (0: not hooked)
+uintptr_t GameTeamNameFunction();
 
 uintptr_t MakeTrampoline(uintptr_t addr, char const *prologue);
+uintptr_t MakeTrampolineWithCall(uintptr_t addr, char const *prologue);
 
 // Memory allocated by the plugin itself (shown by the memory monitor)
 struct MemoryStats {

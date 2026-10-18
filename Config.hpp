@@ -7,6 +7,7 @@ class Config : public SettingsAbstract {
 public:
     SETTINGS_PARAMETER(int,    LOG_LEVEL,  "MAIN/LOG_LEVEL",         0);
     SETTINGS_PARAMETER(int,    MEMORY_MONITOR, "MAIN/MEMORY_MONITOR", 0);
+    SETTINGS_PARAMETER(int,    UI_INSPECTOR,   "MAIN/UI_INSPECTOR",   0);
     SETTINGS_PARAMETER(string, MODE,       "FILE_LOADER/MODE",       "");
     SETTINGS_PARAMETER(string, PATH1,      "FILE_LOADER/PATH1",      "");
     SETTINGS_PARAMETER(string, PATH2,      "FILE_LOADER/PATH2",      "");
@@ -58,6 +59,26 @@ public:
     SETTINGS_PARAMETER(bool,    FLAGS_MIPMAPS,   "FLAGS/MIPMAPS",     true);
     SETTINGS_PARAMETER(string,  FLAGS_FILTER,    "FLAGS/FILTER",      "lanczos");
     SETTINGS_PARAMETER(int,     FLAGS_CACHE_MB,  "FLAGS/CACHE_MB",    96);
+    // player photos on some menu panels: FOLDER\<player id>.png|.dds, background.png|.dds behind every photo,
+    // no_photo.png|.dds for players without a photo; BORDER: of the background around the photo (GS lines); per place:
+    // "height, x, y" (GS lines; x, y: moves the photo); EDIT_HEAD_MODEL_Y: moves the 3D head of Edit player (GS
+    // lines, negative: up)
+    SETTINGS_PARAMETER(bool,    PLAYER_PHOTOS,    "PLAYER_PHOTOS/ENABLED",   true);
+    SETTINGS_PARAMETER(wstring, PHOTOS_FOLDER,    "PLAYER_PHOTOS/FOLDER",    L"dat\\assets\\photos");
+    SETTINGS_PARAMETER(int,     PHOTOS_BORDER,    "PLAYER_PHOTOS/BORDER",    1);
+    SETTINGS_PARAMETER(string,  PHOTOS_EDIT_LIST, "PLAYER_PHOTOS/EDIT_LIST", "68, 0, 0");
+    SETTINGS_PARAMETER(string,  PHOTOS_EDIT_MENU, "PLAYER_PHOTOS/EDIT_MENU", "68, 0, 0");
+    SETTINGS_PARAMETER(string,  PHOTOS_ML_LIST,   "PLAYER_PHOTOS/ML_LIST",   "50, -4, -3");
+    SETTINGS_PARAMETER(string,  PHOTOS_ML_POPUP,  "PLAYER_PHOTOS/ML_POPUP",  "62, -2, 4");
+    SETTINGS_PARAMETER(string,  PHOTOS_ML_NO_PHOTO, "PLAYER_PHOTOS/ML_NO_PHOTO", "");
+    SETTINGS_PARAMETER(string,  PHOTOS_ML_POPUP_NO_PHOTO, "PLAYER_PHOTOS/ML_POPUP_NO_PHOTO", "3d");   // older name
+    SETTINGS_PARAMETER(string,  PHOTOS_ML_SEASON,  "PLAYER_PHOTOS/ML_SEASON",  "68, 0, 0");
+    SETTINGS_PARAMETER(string,  PHOTOS_ML_RANKING, "PLAYER_PHOTOS/ML_RANKING", "34, -152, 0");
+    SETTINGS_PARAMETER(string,  PHOTOS_ML_POINTS,  "PLAYER_PHOTOS/ML_POINTS",  "37, -152, 0");
+    SETTINGS_PARAMETER(string,  PHOTOS_LEAGUE_SEASON, "PLAYER_PHOTOS/LEAGUE_SEASON", "68, 0, 0");
+    SETTINGS_PARAMETER(string,  PHOTOS_ML_POPUP_3D_SCALE, "PLAYER_PHOTOS/ML_POPUP_3D_SCALE", "0.8");
+    SETTINGS_PARAMETER(int,     PHOTOS_EDIT_HEAD_MODEL_Y, "PLAYER_PHOTOS/EDIT_HEAD_MODEL_Y", -30);
+    SETTINGS_PARAMETER(bool,    PHOTOS_EDIT_LIST_FULL_3D, "PLAYER_PHOTOS/EDIT_LIST_FULL_3D", true);
     // game texts from .tr files in plugins and dat\assets\translation (and their subfolders)
     SETTINGS_PARAMETER(bool,    TEXT_LOADER,     "TEXT_LOADER/ENABLED", true);
 };

@@ -185,6 +185,32 @@ void LogUnreplaced(void *texture) {
     LOG(LOG_LEVEL_1, "texture %s (%ux%u) drawn, no file", it->second.c_str(), d.width, d.height);
 }
 
+wstring TexturesFolder() {
+    wstring base = config().TEXTURES_FOLDER;
+    if (!(base.size() > 1 && base[1] == L':'))
+        base = PES::GameDirPath(base);
+    return base;
+}
+
+// a .dds or .png in the folder or in a language's folder
+bool AnyTextureFile() {
+    wstring base = TexturesFolder();
+    vector<wstring> folders = { base };
+    for (char const *letter = gAddr.languageLetters; *letter; letter++)
+        folders.push_back(base + L"\\" + wchar_t(*letter));
+    for (wstring const &folder : folders) {
+        for (wchar_t const *pattern : { L"\\*.dds", L"\\*.png" }) {
+            WIN32_FIND_DATAW fd;
+            HANDLE h = FindFirstFileW((folder + pattern).c_str(), &fd);
+            if (h != INVALID_HANDLE_VALUE) {
+                FindClose(h);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void ScanNames(void *dev) {
     int language = *reinterpret_cast<int *>(gAddr.language);
     if (language != gLanguage) {
@@ -198,9 +224,7 @@ void ScanNames(void *dev) {
         Data().namesSeen.clear();
         Data().gameByReplacement.clear();
     }
-    wstring base = config().TEXTURES_FOLDER;
-    if (!(base.size() > 1 && base[1] == L':'))
-        base = PES::GameDirPath(base);
+    wstring base = TexturesFolder();
     if (GetFileAttributesW(base.c_str()) == INVALID_FILE_ATTRIBUTES)
         return;
     vector<wstring> folders;
@@ -479,6 +503,11 @@ void Install(PES::Version v) {
         gAddr = { 0xF83E68, 0xF84350, 0xF86098, 0x3A67F50, 0x1030ED8 + 4, "efgisp", 0x405678, 0x9546C5 };
         break;
     default:
+        return;
+    }
+    // no files (and no log of the textures drawn without one): nothing to do
+    if (!config().TEXTURES_LOG && !AnyTextureFile()) {
+        LOG(LOG_LEVEL_1, "texture replacement: no files in %S, not installed", TexturesFolder().c_str());
         return;
     }
     if (patch::GetBytes(gAddr.deviceCreateCall, 1) != "E8" || patch::GetBytes(gAddr.textureCopyCall, 1) != "E8") {

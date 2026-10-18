@@ -31,6 +31,18 @@
 //   25|151 line 1\nline 2     ; \n new line, \\ backslash
 //   25|152 [color=ff0000ff]red[color=ffffffff] [button=ja] [\uE000] [spacing=-1] [font=abc] [\x11]
 //                           ; tags as in the strings editor of PesAfsEditor
+//   COUNTRY|42 Argentina, ARG     ; a country (nationality): its name, its abbreviation (COUNTRY_42 the same)
+//   TEAM|70 Chelsea, CLS          ; a team (TEAM_70 the same)
+//   TEAM|200 "MyTeam, Retro", MTR ; quotes: a name with a comma (or spaces kept)
+//   TEAM|71 Everton               ; the name only (", EVE": the abbreviation only)
+//
+// Country and team names are not texts of the string tables: the game takes them from tables of its own (teams: the
+// option file's names of the edited clubs first) through CountryName(country, abbreviation) and TeamName(team,
+// abbreviation, defaults); both are hooked at their start, a name of ours wins. The screens of saved games take the
+// names from the save's copy of the teams' data (RecordName(data, abbreviation)): the team is the one in the data
+// (the club a Master League team is made of). The ids are the game's (PES5 and PES6
+// differ). A name is kept to what the option file holds (48 bytes, the abbreviation 3): the game copies them there and
+// into buffers of that size (fixed buffers of ours, as the game copies 49 / 4 bytes of a name).
 namespace TextLoader {
 
 struct GameAddresses {
@@ -41,6 +53,15 @@ struct GameAddresses {
     uintptr_t findEntry;            // sub_59DB90(file, id): the entry of id in that file
 };
 constinit GameAddresses gAddr = {};
+
+struct NameAddresses {
+    uintptr_t countryName;          // char *(country, abbreviation): 0xFFFF the nation free
+    uintptr_t teamName;             // char *(team, kind (1: abbreviation), defaults (no option file names))
+    unsigned nationFree;            // the country of 0xFFFF
+    uintptr_t recordName;           // char *(team data, abbreviation): the name in a copy of a team's data
+    unsigned recordTeam;            // in the data: the team (word)
+};
+constinit NameAddresses gNames = {};
 
 // sub_59DB50 and sub_59DB90, as they are (both games)
 char const FIND_FILE_CODE[] =
@@ -77,6 +98,20 @@ unordered_map<unsigned, unique_ptr<Text>> &Texts() {
 unordered_set<unsigned> &TablesWithTexts() {
     static unordered_set<unsigned> tables;
     return tables;
+}
+
+enum NameKind { COUNTRY, TEAM };
+constexpr size_t NAME_BYTES[2] = { 48, 3 };    // the full name, the abbreviation (without the null)
+
+struct Name {
+    bool defined[2][LANGUAGES + 1] = {};        // [full name, abbreviation][language slot]
+    char text[2][LANGUAGES + 1][64] = {};       // zero-padded
+};
+
+// kind << 16 | id
+unordered_map<unsigned, unique_ptr<Name>> &Names() {
+    static unordered_map<unsigned, unique_ptr<Name>> names;
+    return names;
 }
 
 StringFile gEmptyFile = { -1, 0, nullptr, nullptr, nullptr };
@@ -143,6 +178,43 @@ Entry *__cdecl OnFindEntry(StringFile *f, unsigned id) {
         ours->shortId = shortId && OurEntry((id & 0xFFFF0000) | shortId, language) ? shortId : 0;
     }
     return ours;
+}
+
+// ---------------------------------------------------------------------------------------------
+// country and team names
+
+constinit uintptr_t oCountryName = 0, oTeamName = 0, oRecordName = 0;
+
+char const *OurName(NameKind kind, unsigned id, int part) {
+    auto it = Names().find(unsigned(kind) << 16 | id);
+    if (it == Names().end())
+        return nullptr;
+    Name &n = *it->second;
+    int language = Language();
+    int slot = language != ALL && n.defined[part][language] ? language : ALL;
+    return n.defined[part][slot] ? n.text[part][slot] : nullptr;
+}
+
+char const *__cdecl OnCountryName(int country, int abbreviation) {
+    unsigned id = country == 0xFFFF ? gNames.nationFree : unsigned(country);
+    if (char const *name = id <= 0xFFFF ? OurName(COUNTRY, id, abbreviation ? 1 : 0) : nullptr)
+        return name;
+    return CallAndReturnDynGlobal<char const *>(oCountryName, country, abbreviation);
+}
+
+char const *__cdecl OnTeamName(int team, int kind, int defaults) {
+    if (char const *name = OurName(TEAM, unsigned(team) & 0xFFFF, kind == 1 ? 1 : 0))
+        return name;
+    return CallAndReturnDynGlobal<char const *>(oTeamName, team, kind, defaults);
+}
+
+char const *__cdecl OnRecordName(uint8_t const *data, int kind) {
+    if (data) {
+        unsigned team = *reinterpret_cast<uint16_t const *>(data + gNames.recordTeam);
+        if (char const *name = OurName(TEAM, team, kind == 1 ? 1 : 0))
+            return name;
+    }
+    return CallAndReturnDynGlobal<char const *>(oRecordName, data, kind);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -344,6 +416,66 @@ bool ParseId(string const &token, unsigned &id, int &shortId) {
     return ParseNumber(s, id);
 }
 
+// "COUNTRY|42" / "TEAM_70" (any case)
+bool ParseNameId(string const &token, NameKind &kind, unsigned &id) {
+    string t = Lower(token);
+    static char const *const prefixes[2] = { "country", "team" };
+    for (int k = 0; k < 2; k++) {
+        size_t len = strlen(prefixes[k]);
+        if (t.size() > len + 1 && t.compare(0, len, prefixes[k]) == 0 && (t[len] == '|' || t[len] == '_')) {
+            kind = NameKind(k);
+            return ParseNumber(t.substr(len + 1), id) && id <= 0xFFFF;
+        }
+    }
+    return false;
+}
+
+// "full name, abbreviation": a part in quotes may have commas; an empty part: the game's
+bool SplitName(string const &s, string (&parts)[2], bool (&given)[2]) {
+    int n = 0;
+    for (size_t i = 0;;) {
+        while (i < s.size() && (s[i] == ' ' || s[i] == '\t'))
+            i++;
+        string part;
+        bool quoted = false;
+        if (i < s.size() && s[i] == '"') {
+            size_t close = s.find('"', i + 1);
+            if (close == string::npos)
+                return false;
+            part = s.substr(i + 1, close - i - 1);
+            quoted = true;
+            for (i = close + 1; i < s.size() && (s[i] == ' ' || s[i] == '\t'); i++)
+                ;
+            if (i < s.size() && s[i] != ',')
+                return false;
+        }
+        else {
+            size_t comma = s.find(',', i);
+            part = Trim(s.substr(i, comma == string::npos ? string::npos : comma - i));
+            i = comma == string::npos ? s.size() : comma;
+        }
+        if (n == 2)
+            return false;
+        parts[n] = part;
+        given[n] = quoted || !part.empty();
+        n++;
+        if (i >= s.size())
+            return true;
+        i++;    // the comma
+    }
+}
+
+// a name kept to `bytes` (whole UTF-8 characters)
+bool FitName(string &name, size_t bytes) {
+    if (name.size() <= bytes)
+        return true;
+    size_t end = bytes;
+    while (end > 0 && (static_cast<unsigned char>(name[end]) & 0xC0) == 0x80)
+        end--;
+    name.resize(end);
+    return false;
+}
+
 void LoadFile(path const &file, int &count) {
     vector<unsigned char> data;
     {
@@ -401,6 +533,36 @@ void LoadFile(path const &file, int &count) {
             continue;
         }
         size_t space = line.find_first_of(" \t");
+        NameKind kind;
+        unsigned nameId;
+        if (ParseNameId(line.substr(0, space), kind, nameId)) {
+            string parts[2];
+            bool given[2] = {};
+            if (space == string::npos || !SplitName(Trim(line.substr(space)), parts, given) || !(given[0] || given[1])) {
+                LOG(LOG_LEVEL_1, "texts: %S(%d): bad name (name, abbreviation)", file.c_str(), lineNo);
+                continue;
+            }
+            auto &n = Names()[unsigned(kind) << 16 | nameId];
+            if (!n)
+                n = make_unique<Name>();
+            for (int part = 0; part < 2; part++) {
+                if (!given[part])
+                    continue;
+                string text = GameText(parts[part]);
+                if (!FitName(text, NAME_BYTES[part]))
+                    LOG(LOG_LEVEL_1, "texts: %S(%d): %s cut to %u bytes", file.c_str(), lineNo,
+                        part ? "abbreviation" : "name", unsigned(NAME_BYTES[part]));
+                for (int l = 0; l <= LANGUAGES; l++) {
+                    if (!languages[l])
+                        continue;
+                    n->defined[part][l] = true;
+                    memset(n->text[part][l], 0, sizeof(n->text[part][l]));
+                    memcpy(n->text[part][l], text.data(), text.size());
+                }
+            }
+            loaded++;
+            continue;
+        }
         unsigned id;
         int shortId;
         if (!ParseId(line.substr(0, space), id, shortId)) {
@@ -456,7 +618,8 @@ void LoadTexts() {
     }
     BuildEntries();
     if (files)
-        LOG(LOG_LEVEL_1, "texts: %d from %d .tr files", count, files);
+        LOG(LOG_LEVEL_1, "texts: %d from %d .tr files (%u country and team names)", count, files,
+            unsigned(Names().size()));
 }
 
 // the entries of the game's format, pointing at our texts
@@ -480,28 +643,53 @@ void Install(PES::Version v) {
     switch (v.id()) {
     case ID_PES5:
         gAddr = { 0xFE598C, 0xFE6234 + 4, "efgisj", 0x59DB50, 0x59DB90 };
+        gNames = { 0x8EFAA0, 0x8EFF50, 108, 0x8EFF30, 0x6C };
         break;
     case ID_PES6:
         gAddr = { 0x3A67B94, 0x1030ED8 + 4, "efgisp", 0x94E380, 0x94E3C0 };
+        gNames = { 0x862F70, 0x863570, 105, 0x863550, 0x36 };
         break;
     default:
         return;
     }
     size_t fileLen = (sizeof(FIND_FILE_CODE)) / 3, entryLen = (sizeof(FIND_ENTRY_CODE)) / 3;
     string fileCode = patch::GetBytes(gAddr.findFile, fileLen);
-    if (fileCode.substr(15) != string(FIND_FILE_CODE).substr(15) ||
-        *reinterpret_cast<uintptr_t *>(gAddr.findFile + 1) != gAddr.stringFiles ||
-        patch::GetBytes(gAddr.findEntry, entryLen) != FIND_ENTRY_CODE) {
-        LOG(LOG_LEVEL_1, "texts: unexpected code, not installed");
-        return;
-    }
+    bool strings = fileCode.substr(15) == string(FIND_FILE_CODE).substr(15) &&
+        *reinterpret_cast<uintptr_t *>(gAddr.findFile + 1) == gAddr.stringFiles &&
+        patch::GetBytes(gAddr.findEntry, entryLen) == FIND_ENTRY_CODE;
+    if (!strings)
+        LOG(LOG_LEVEL_1, "texts: unexpected code, the texts are not installed");
     LoadTexts();
-    if (Texts().empty())
+    if (strings && !Texts().empty()) {
+        patch::RedirectJump(gAddr.findFile, OnFindFile);
+        patch::RedirectJump(gAddr.findEntry, OnFindEntry);
+    }
+    if (Names().empty())
         return;
-    patch::RedirectJump(gAddr.findFile, OnFindFile);
-    patch::RedirectJump(gAddr.findEntry, OnFindEntry);
+    // CountryName: mov eax, [esp+4]; cmp eax, 0FFFFh; TeamName: push esi; mov esi, [esp+8]; push edi;
+    // mov edi, [esp+14h]
+    oCountryName = MakeTrampoline(gNames.countryName, "8B 44 24 04 3D FF FF 00 00");
+    oTeamName = MakeTrampoline(gNames.teamName, "56 8B 74 24 08 57 8B 7C 24 14");
+    if (oCountryName && oTeamName) {
+        patch::RedirectJump(gNames.countryName, OnCountryName);
+        patch::RedirectJump(gNames.teamName, OnTeamName);
+    }
+    else
+        LOG(LOG_LEVEL_1, "texts: unexpected code at %X / %X, the country and team names are not installed",
+            gNames.countryName, gNames.teamName);
+    // RecordName: mov eax, [esp+4]; test eax, eax
+    oRecordName = MakeTrampoline(gNames.recordName, "8B 44 24 04 85 C0");
+    if (oRecordName)
+        patch::RedirectJump(gNames.recordName, OnRecordName);
+    else
+        LOG(LOG_LEVEL_1, "texts: unexpected code at %X, the team names of saved games are not replaced",
+            gNames.recordName);
 }
 
+}
+
+uintptr_t GameTeamNameFunction() {
+    return TextLoader::oTeamName;
 }
 
 void InitTextLoader(PES::Version v) {

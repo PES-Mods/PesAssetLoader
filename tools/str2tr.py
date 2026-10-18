@@ -1,12 +1,15 @@
 """
 str2tr.py -- dump the game's string tables (.str files) into one .tr file for PesAssetLoader's text loader.
 
-    python str2tr.py [folder] [--out text.tr] [--lang e]
+    python str2tr.py [folder] [--out text.tr] [--lang e] [--id-format split|full|hex]
 
 Reads every .str file in the folder (default: the current one) and writes text.tr there. Each text becomes
 one line "table|string text" ("table|string/short text" when it has a short version), tables in id order,
 each under a comment naming the files it was found in. A table found in several files is written once
 (a text that differs between them is written as found first, with a comment).
+
+The form of the id is set by ID_FORMAT below or --id-format: "split" = TABLEID|STRINGID[/SHORT], "full" =
+FULLID[/SHORT] as one decimal number (table << 16 | string id), "hex" = the same as a 0x hex number.
 
 Texts are written as the text loader reads them: tags as in the strings editor of PesAfsEditor ([color=...],
 [spacing=...], [font=...], [button=...], [\\uXXXX], [\\xNN]), \\n for a new line, \\\\ for a backslash, and
@@ -24,6 +27,12 @@ import re
 import struct
 import sys
 import zlib
+
+# How a text id is written; the text loader reads all of them. --id-format overrides this.
+#   'split': TABLEID|STRINGID[/SHORT]      e.g.  25|142/143
+#   'full' : FULLID[/SHORT], decimal       e.g.  1638542/143     (FULLID = table << 16 | string id)
+#   'hex'  : FULLID[/SHORT], 0x hex        e.g.  0x19008E/143
+ID_FORMAT = 'full'
 
 SIG_TABLE = 0x0400
 FOLDER_TYPES = (0x0600, 0x0000)     # folder, single file (low 16 bits; bit 16: compressed)
@@ -79,6 +88,17 @@ def is_hex(s):
     return all(c in '0123456789abcdefABCDEF' for c in s)
 
 
+def format_id(table_id, sid, short=0, id_format=None):
+    """The id of a text as a .tr id token, in the form of ID_FORMAT (or `id_format`)."""
+    id_format = id_format or ID_FORMAT
+    if id_format == 'split':
+        token = '%d|%d' % (table_id, sid)
+    else:
+        full = (table_id << 16) | sid
+        token = '0x%X' % full if id_format == 'hex' else '%d' % full
+    return token + ('/%d' % short if short else '')
+
+
 def to_tr(text):
     out = []
     i = 0
@@ -127,7 +147,11 @@ def main():
     ap.add_argument('folder', nargs='?', default='.', help='folder with the .str files (default: current)')
     ap.add_argument('--out', default='text.tr', help='output file, relative to the folder (default: text.tr)')
     ap.add_argument('--lang', help='language line at the top, e.g. e')
+    ap.add_argument('--id-format', choices=('split', 'full', 'hex'), default=ID_FORMAT,
+                    help='form of the text ids: split = TABLEID|STRINGID[/SHORT], full = FULLID[/SHORT] (decimal), '
+                         'hex = FULLID[/SHORT] (0x hex); default: %s' % ID_FORMAT)
     args = ap.parse_args()
+    id_format = args.id_format
 
     tables = {}
     files = sorted(glob.glob(os.path.join(args.folder, '*.str')), key=str.lower)
@@ -159,9 +183,9 @@ def main():
                 if sid not in first:
                     first[sid] = (short, text)
                 elif first[sid] != (short, text):
-                    lines.append('; %d|%d differs in %s: %s' % (table_id, sid, name, to_tr(text)))
+                    lines.append('; %s differs in %s: %s' % (format_id(table_id, sid, 0, id_format), name, to_tr(text)))
         for sid, (short, text) in first.items():
-            lines.append('%d|%d%s %s' % (table_id, sid, '/%d' % short if short else '', to_tr(text)))
+            lines.append('%s %s' % (format_id(table_id, sid, short, id_format), to_tr(text)))
             count += 1
 
     out = os.path.join(args.folder, args.out)

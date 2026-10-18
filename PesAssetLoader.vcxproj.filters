@@ -5,6 +5,9 @@
     <ClCompile Include="FileLoader.cpp" />
     <ClCompile Include="MemoryLimits.cpp" />
     <ClCompile Include="FlagReplacer.cpp" />
+    <ClCompile Include="UiInspector.cpp" />
+    <ClCompile Include="Ui.cpp" />
+    <ClCompile Include="PlayerPhotos.cpp" />
     <ClCompile Include="TextureLimits.cpp" />
     <ClCompile Include="MemoryMonitor.cpp" />
     <ClCompile Include="TextLoader.cpp" />
@@ -63,6 +66,8 @@
     </ClInclude>
     <ClInclude Include="Main.hpp" />
     <ClInclude Include="TextureLimits.hpp" />
+    <ClInclude Include="Ui.hpp" />
+    <ClInclude Include="FlagReplacer.hpp" />
     <ClInclude Include="settings\Settings.h">
       <Filter>settings</Filter>
     </ClInclude>

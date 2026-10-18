@@ -222,7 +222,9 @@ static int MyFilter(weFileId id) {
     return FindAsset(archiveId, fileIndex) ? 1 : 0;
 }
 
-static void OnFileSetLoadOverrideFilter(void *) {
+static void CheckKitserverReadFile();
+
+static void OnFileSetLoadOverrideFilter(void *filter) {
     string searchPaths[10] = {
         config().PATH1, config().PATH2, config().PATH3, config().PATH4, config().PATH5,
         config().PATH6, config().PATH7, config().PATH8, config().PATH9, config().PATH10
@@ -238,12 +240,80 @@ static void OnFileSetLoadOverrideFilter(void *) {
             f.pop_back();
     }
     Mode = ToLower(config().MODE) == "dynamic" ? AssetLoadingMode::Dynamic : AssetLoadingMode::Cached;
-    if (Mode == AssetLoadingMode::Cached)
+    if (Mode == AssetLoadingMode::Cached) {
         ScanAssetsFolders(-1, -1, 0);
+        // no files: the game's filter (none), the game reads its archives as it is
+        if (AssetsMap().empty()) {
+            LOG(LOG_LEVEL_1, "[FileLoader] no files, the archives are read as they are");
+            plugin::CallDynGlobal(FileSetLoadOverrideFilter, filter);
+            return;
+        }
+    }
+    CheckKitserverReadFile();
     plugin::CallDynGlobal(FileSetLoadOverrideFilter, MyFilter);
 }
 
+// Kitserver (kload.dll) replaces the game's call of ReadFile (call [ReadFile] -> call afsReadFile) and takes every
+// read for a read of an AFS archive: it looks up the archive by the name of the game's file object (esi + 0x60:
+// the path; the name after the last '\' among the 8 names in the game's AFS table, entry + 0x10) without checking
+// that it found one, and crashes on the loose files. Once kload has patched the call (it does so after the plugin is
+// loaded), the call is redirected to ReadFileStub: reads of the archives kload knows go to kload, others (the loose
+// files) to ReadFile.
+struct KitserverReadFile {
+    uintptr_t call;         // the game's call [ReadFile]
+    uintptr_t afsTable;     // the game's AFS table: up to 8 pointers to the archives (+0x10 name)
+};
+constinit static KitserverReadFile gKitserverRead = {};
+constinit static uintptr_t gReadFileSlot = 0;       // the import of ReadFile (the operand of the game's call)
+constinit static uintptr_t gKitserverAfsReadFile = 0;
+
+static bool __cdecl IsKitserverAfsRead(uint8_t const *file) {
+    __try {
+        char const *path = (char const *)(file + 0x60);
+        char const *name = strrchr(path, '\\');
+        if (!name)
+            return false;
+        name++;
+        auto archives = (char const *const *)gKitserverRead.afsTable;
+        for (int i = 0; i < 8; i++) {
+            if (archives[i] && !strncmp(name, archives[i] + 0x10, 20))
+                return true;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return false;
+}
+
+// ReadFile(hFile, buffer, size, read, overlapped) with esi = the game's file object
+static __declspec(naked) void ReadFileStub() {
+    __asm {
+        push esi
+        call IsKitserverAfsRead
+        add esp, 4
+        test al, al
+        jz direct
+        jmp gKitserverAfsReadFile
+    direct:
+        mov eax, gReadFileSlot
+        jmp dword ptr [eax]
+    }
+}
+
+// Called before the game reads a loose file (and at startup): takes over kload's patch of the call, once it is there
+static void CheckKitserverReadFile() {
+    if (!gReadFileSlot || patch::GetBytes(gKitserverRead.call, 1) != "E8")
+        return;
+    uintptr_t target = injector::GetBranchDestination(gKitserverRead.call);
+    if (target == (uintptr_t)ReadFileStub)
+        return;
+    gKitserverAfsReadFile = target;
+    patch::RedirectCall(gKitserverRead.call, ReadFileStub);
+    LOG(LOG_LEVEL_1, "[FileLoader] kitserver: loose files are read past its ReadFile hook (%X)", target);
+}
+
 static void weFileBuildLoosePath(weFileId id, char *outPath) {
+    CheckKitserverReadFile();
     auto asset = FindAsset(id.ArchiveId() & 7, id.FileIndex() & 0xFFFF);
     if (asset) {
         strcpy(outPath, NormalizedGameDirPath().c_str());
@@ -297,6 +367,10 @@ void InitFileLoader(PES::Version v) {
         patch::RedirectJump(0x65A230, weFileBuildLoosePath);
         GameDirPath = ExeDirPath();
         gRegisterArchive2 = patch::RedirectCall(0x7E5892, OnRegisterArchive2);
+        // the game's call [ReadFile] (kitserver: C_READFILE_CS, AFS_PAGELEN_TABLE)
+        gKitserverRead = { 0x44C014, 0x3B5CBC0 };
+        if (patch::GetBytes(gKitserverRead.call, 2) == "FF 15")
+            gReadFileSlot = patch::GetUInt(gKitserverRead.call + 2);
         break;
     }
 }

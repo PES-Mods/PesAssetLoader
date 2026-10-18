@@ -1,4 +1,4 @@
-#include "TextureLimits.hpp"
+#include "FlagReplacer.hpp"
 #include <map>
 #include <deque>
 #include <xmmintrin.h>
@@ -809,6 +809,101 @@ static void InstallTeamEmblems(TeamEmblemAddresses const &a) {
     LOG(LOG_LEVEL_1, "[Flags] team emblems: on");
 }
 
+// --- the emblems of saved games (Load / Save data, the replays) ---
+// A save keeps the emblems of its two teams as pictures (32x32, 8 bits) next to their ids, and these screens make
+// the textures from those pictures (SavedEmblem(save header, texture id, which: 0, 1 the first team, 2, 3 the second;
+// 4..7 other pictures)), so a Master League save showed the game's emblem. The leagues and cups make it from the team
+// (TeamEmblemTexture(texture id, team, 1, 1)): the teams' emblems of the saves are made that way too, so they get the
+// files of the emblems or of the teams. A replay of a Master League match has the Master League's own team (MyTeam,
+// HisTeam): the save's copy of its data (the teams' records follow each other) has the team it is made of, whose
+// emblem is used. A Master League save keeps only the picture of its team (4, 6; 5, 7 bigger) and its name: the team is
+// the mode's team, else the club with that name (the game's names, as the save has them).
+struct SavedEmblemAddresses {
+    uintptr_t savedEmblem;          // SavedEmblem(header, texture id, which)
+    uintptr_t teamEmblemTexture;    // TeamEmblemTexture(texture id, team, size, 1)
+    uintptr_t emblemContext;        // (pointer) the emblems of these screens, used by TeamEmblemTexture
+    unsigned int teams;             // in the header: the ids of the two teams (words)
+    unsigned int myTeam;            // the first of the Master League's own teams
+    unsigned int records;           // in the header: the data of the two teams
+    unsigned int recordSize;
+    unsigned int recordBase;        // in a team's data: the team it is made of (word)
+    uintptr_t teamName;             // char *TeamName(team, kind, defaults)
+    unsigned int modeTeam;          // in the header of a Master League save: the mode's team (word)
+    unsigned int savedName;         // its team's name (48 bytes)
+};
+constinit static SavedEmblemAddresses gSavedEmblem = {};
+constinit static uintptr_t oSavedEmblem = 0;
+
+// the club with this name (the game's names: the edited one, the default one)
+static unsigned int TeamOfName(char const *name) {
+    uintptr_t teamName = GameTeamNameFunction();
+    if (!teamName)
+        teamName = gSavedEmblem.teamName;
+    for (unsigned int team = 64; name[0] && team < gSavedEmblem.myTeam; team++) {
+        for (int defaults = 0; defaults < 2; defaults++) {
+            auto n = CallAndReturnDynGlobal<char const *>(teamName, team, 0, defaults);
+            if (n && !strcmp(n, name))
+                return team;
+        }
+    }
+    return 0xFFFF;
+}
+
+static void *__cdecl OnSavedEmblem(uint8_t const *header, int texId, int which) {
+    if (header && which >= 0 && which <= 7 && *(void *const *)gSavedEmblem.emblemContext) {
+        unsigned int saved, team, size = 1;
+        char name[49] = {};
+        if (which <= 3) {
+            unsigned int second = which >= 2;
+            saved = team = *(uint16_t const *)(header + gSavedEmblem.teams + 2 * second);
+            if (team >= gSavedEmblem.myTeam) {
+                // the Master League's own team: the club it is made of
+                team = *(uint16_t const *)(header + gSavedEmblem.records + gSavedEmblem.recordSize * second
+                    + gSavedEmblem.recordBase);
+                if (team < 64)
+                    team = 0xFFFF;
+            }
+        }
+        else {
+            // a Master League save: the mode's team, else the club of the save's name
+            size = which & 1 ? 2 : 1;
+            saved = team = *(uint16_t const *)(header + gSavedEmblem.modeTeam);
+            if (team < 64 || team >= gSavedEmblem.myTeam) {
+                memcpy(name, header + gSavedEmblem.savedName, 48);
+                team = TeamOfName(name);
+            }
+        }
+        // logged once per picture and team
+        constinit static uint32_t logged[32] = {};
+        uint32_t key = (uint32_t)which << 28 | (saved & 0x3FFF) << 14 | (team & 0x3FFF);
+        for (uint32_t &l : logged) {
+            if (l == key)
+                break;
+            if (!l) {
+                l = key;
+                LOG(LOG_LEVEL_1, "[Flags] saved game emblem %d: team %u, emblem of team %u (%s)", which, saved, team,
+                    name);
+                break;
+            }
+        }
+        if (team < gSavedEmblem.myTeam)
+            return CallAndReturnDynGlobal<void *>(gSavedEmblem.teamEmblemTexture, texId, team, size, 1);
+    }
+    return CallAndReturnDynGlobal<void *>(oSavedEmblem, header, texId, which);
+}
+
+static void InstallSavedEmblems(SavedEmblemAddresses const &a) {
+    // SavedEmblem: sub esp, 8; push edi; mov edi, [esp+14h]; TeamEmblemTexture: push ebp; mov ebp, [esp+8]; push ebp
+    oSavedEmblem = patch::GetBytes(a.teamEmblemTexture, 6) == "55 8B 6C 24 08 55"
+        ? MakeTrampoline(a.savedEmblem, "83 EC 08 57 8B 7C 24 14") : 0;
+    if (!oSavedEmblem) {
+        LOG(LOG_LEVEL_1, "[Flags] unexpected code at %X, the emblems of saved games are not replaced", a.savedEmblem);
+        return;
+    }
+    gSavedEmblem = a;
+    patch::RedirectJump(a.savedEmblem, OnSavedEmblem);
+}
+
 // A 32-bit texture with these pixels in place of 'owner'
 static void SetFlagTexture(Texture *owner, uint32_t const *pixels, unsigned int width, unsigned int height,
     bool mips, char const *reason)
@@ -986,9 +1081,27 @@ struct TextureFile {
     vector<uint8_t> data;       // the DDS file
     vector<uint32_t> pixels;    // level 0 as A8R8G8B8 (a DDS: when decoded)
     unsigned int width = 0, height = 0;
+    unsigned int imageWidth = 0, imageHeight = 0;   // the size of the picture (a PNG is resized to powers of two)
 };
 
-static bool ReadTextureFile(wstring const &path, TextureFile &f) {
+// Pixels put in the top left corner of a bigger texture: the rest repeats the last column and row (so the picture's
+// edge is drawn as it is)
+static vector<uint32_t> PadArgb(vector<uint32_t> const &src, unsigned int sw, unsigned int sh, unsigned int dw,
+    unsigned int dh)
+{
+    vector<uint32_t> out((size_t)dw * dh);
+    for (unsigned int y = 0; y < dh; y++) {
+        uint32_t const *line = &src[(size_t)min(y, sh - 1) * sw];
+        uint32_t *dst = &out[(size_t)y * dw];
+        memcpy(dst, line, (size_t)sw * 4);
+        for (unsigned int x = sw; x < dw; x++)
+            dst[x] = line[sw - 1];
+    }
+    return out;
+}
+
+// pad: a PNG whose sizes aren't powers of two is padded to them (else resized)
+static bool ReadTextureFile(wstring const &path, TextureFile &f, bool pad = false) {
     vector<uint8_t> file;
     if (!ReadWholeFile(path, file))
         return false;
@@ -1002,22 +1115,28 @@ static bool ReadTextureFile(wstring const &path, TextureFile &f) {
                 info.width, info.height);
             return false;
         }
-        f.width = info.width;
-        f.height = info.height;
+        f.width = f.imageWidth = info.width;
+        f.height = f.imageHeight = info.height;
         f.data = std::move(file);
         return true;
     }
     unsigned int iw, ih;
     if (!DecodeImage(path, file, f.pixels, iw, ih))
         return false;
+    f.imageWidth = iw;
+    f.imageHeight = ih;
     f.width = 1;
     f.height = 1;
     while (f.width < iw && f.width < 4096)
         f.width *= 2;
     while (f.height < ih && f.height < 4096)
         f.height *= 2;
-    if (f.width != iw || f.height != ih)
-        f.pixels = ResizeArgb(f.pixels, iw, ih, f.width, f.height);
+    if (f.width != iw || f.height != ih) {
+        if (pad && iw <= f.width && ih <= f.height)
+            f.pixels = PadArgb(f.pixels, iw, ih, f.width, f.height);
+        else
+            f.pixels = ResizeArgb(f.pixels, iw, ih, f.width, f.height);
+    }
     return true;
 }
 
@@ -1036,6 +1155,35 @@ static Texture *TextureFromFile(Texture *owner, TextureFile const &f) {
         memcpy(Texels(t), f.pixels.data(), f.pixels.size() * 4);
         BuildFlagMips(t);
     }
+    return t;
+}
+
+Texture *LoadPictureTexture(wstring const &path, uint32_t texNo, bool mips, unsigned int &width, unsigned int &height) {
+    TextureFile f;
+    if (!ReadTextureFile(path, f, true))
+        return nullptr;
+    Texture header = {};
+    header.texNo = texNo;
+    Texture *t;
+    if (f.dds)
+        t = DdsTexture(&header, f.data, f.width, f.height, mips);
+    else {
+        t = CreateArgbTexture(&header, f.width, f.height);
+        if (t) {
+            BleedArgb(f.pixels, f.width, f.height);
+            memcpy(Texels(t), f.pixels.data(), f.pixels.size() * 4);
+            if (mips)
+                BuildFlagMips(t);
+            else
+                t->vramPages_levels &= 0x0FFF;
+        }
+    }
+    if (!t)
+        return nullptr;
+    t->texNo = texNo;
+    AddOwnTexture(t);
+    width = f.imageWidth;
+    height = f.imageHeight;
     return t;
 }
 
@@ -1387,7 +1535,7 @@ static void *OnFlagTextureCreate(int file, int flagId, int folder) {
 
 // The hook is installed only when there are flag files
 static void Install(uintptr_t flagTextureCreate, uintptr_t texRefTexture, TeamFlagAddresses const &teamFlags,
-    TeamEmblemAddresses const &teamEmblems)
+    TeamEmblemAddresses const &teamEmblems, SavedEmblemAddresses const &savedEmblems)
 {
     if (!config().FLAGS)
         return;
@@ -1424,6 +1572,7 @@ static void Install(uintptr_t flagTextureCreate, uintptr_t texRefTexture, TeamFl
     patch::RedirectJump(flagTextureCreate, OnFlagTextureCreate);
     InstallTeamFlags(teamFlags);
     InstallTeamEmblems(teamEmblems);
+    InstallSavedEmblems(savedEmblems);
     char const *filters[] = { "box", "bilinear", "bicubic", "lanczos" };
     LOG(LOG_LEVEL_1, "[Flags] %u files in %S, scale %u, aspect %.3f, filter %s, mip levels %s, cache %u MB",
         (unsigned int)FlagFiles().size(), FlagsFolderPath().c_str(), gFlagScale, gFlagAspect, filters[gFlagFilter],
@@ -1442,7 +1591,8 @@ void InitFlagReplacer(PES::Version v) {
             { { 0x8F0900, 0x8F02B0 },
               { { 0x543117, 0x5431E5, 0x54326D, 0x5432E5, 0x543345, 0x5433E5, 0x543445 },
                 { 0x543125, 0x5431F1, 0x543279, 0x5432F1, 0x543351, 0x5433F1, 0x543460 } },
-              { 0x5431A3, 0x9209C9 }, 0x544419, 0x54433B, 0x54436C, 111 });
+              { 0x5431A3, 0x9209C9 }, 0x544419, 0x54433B, 0x54436C, 111 },
+            { 0x457AA0, 0x457A10, 0xF7ACF8, 0x150, 242, 0x2C, 140, 0x6C, 0x8EFF50, 0x60, 0x68 });
         break;
     case ID_PES6:
         FlagReplacer::Install(0x95D720, 0x08, { 0x9B13F9, 0x9B11B0, 0x3A6B0D8, 0x9B1500, 0x950ED0, 0x950F30, 114, 115, 291, 0x89D03B,
@@ -1451,7 +1601,8 @@ void InitFlagReplacer(PES::Version v) {
             { { 0x863FF0, 0x8639F0 },
               { { 0x9B03A7, 0x9B0485, 0x9B050D, 0x9B05C5, 0x9B0625, 0x9B0705, 0x9B07A5 },
                 { 0x9B03B5, 0x9B0491, 0x9B0519, 0x9B05D1, 0x9B0631, 0x9B0711, 0x9B07C0 } },
-              { 0x9B0443, 0x8264A9 }, 0x9B1469, 0x9B138B, 0x9B13BC, 115 });
+              { 0x9B0443, 0x8264A9 }, 0x9B1469, 0x9B138B, 0x9B13BC, 115 },
+            { 0xB3BF40, 0xB3BEB0, 0x3B51284, 0xE8, 294, 0x2C, 88, 0x36, 0x863570, 0x60, 0x68 });
         break;
     default:
         break;

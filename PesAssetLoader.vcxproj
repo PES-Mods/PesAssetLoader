@@ -74,6 +74,9 @@
     <ClCompile Include="settings\Settings.cpp" />
     <ClCompile Include="TextLoader.cpp" />
     <ClCompile Include="FlagReplacer.cpp" />
+    <ClCompile Include="UiInspector.cpp" />
+    <ClCompile Include="Ui.cpp" />
+    <ClCompile Include="PlayerPhotos.cpp" />
     <ClCompile Include="TextureLimits.cpp" />
     <ClCompile Include="TextureReplacement.cpp" />
   </ItemGroup>
@@ -82,6 +85,8 @@
     <ClInclude Include="log\Log.hpp" />
     <ClInclude Include="Main.hpp" />
     <ClInclude Include="TextureLimits.hpp" />
+    <ClInclude Include="Ui.hpp" />
+    <ClInclude Include="FlagReplacer.hpp" />
     <ClInclude Include="pesapi\DebugPrint.h" />
     <ClInclude Include="pesapi\Error.h" />
     <ClInclude Include="pesapi\LicenseCheck.h" />
