@@ -21,8 +21,8 @@ using namespace TextureLimits;
 
 // folders 0..2: the .flg folders; per team: 3, 4: emblems (clubs, national teams), 5: team flags (the waving flags),
 // 6: big flags
-static char const *const kFlagFolders[] = { "folder_0", "folder_1", "folder_2", "clubs", "countries", "team_flags",
-    "big_flags" };
+static char const *const kFlagFolders[] = { "folder_0", "folder_1", "folder_2", "clubs", "countries", "flags_small",
+    "flags_big" };
 
 struct FlagPicture {
     vector<uint32_t> pixels;    // A8R8G8B8, the whole raster
@@ -81,7 +81,7 @@ static bool ParseFlagFileName(wstring const &name, unsigned int &id, unsigned in
     return id <= 0xFFFF;
 }
 
-// team_flags, big_flags: "<team id>" (variation 0), "<team id>_<n>", "<team id> (<n>)", "<team id>(<n>)"
+// flags_small, flags_big: "<team id>" (variation 0), "<team id>_<n>", "<team id> (<n>)", "<team id>(<n>)"
 static bool ParseTeamFlagFileName(wstring const &name, unsigned int &team, unsigned int &variation) {
     size_t dot = name.rfind(L'.');
     if (dot == wstring::npos)
@@ -1074,7 +1074,7 @@ static bool IsPowerOfTwo(unsigned int v) {
     return v && !(v & (v - 1));
 }
 
-// A team_flags / big_flags file, used in the layout it has (the texture is as big as the file): a DDS as it is (its
+// A flags_small / flags_big file, used in the layout it has (the texture is as big as the file): a DDS as it is (its
 // format and mip levels), a PNG in 32 bits with mip levels made here (resized to powers of two when it isn't)
 struct TextureFile {
     bool dds = false;
@@ -1191,7 +1191,7 @@ static unsigned int TextureLevels(Texture const *t) {
     return (t->vramPages_levels >> 12) + 1u;
 }
 
-// The team's files of the kind (1: team_flags, 2: big_flags), by variation
+// The team's files of the kind (1: flags_small, 2: flags_big), by variation
 static vector<wstring> TeamFlagFiles(int team, unsigned int kind) {
     vector<wstring> files;
     if (team < 0)
@@ -1352,7 +1352,7 @@ static void __cdecl OnSmallFlagsTexture(int texId) {
 
 // --- the big flag ---
 // The big flag of the match is drawn with the stadium flag texture of its team (28990 home, 28991 away: the copies
-// of the team flags), bound by one call before it is drawn. With a file in big_flags (<team id>) the team gets
+// of the small flags), bound by one call before it is drawn. With a file in flags_big (<team id>) the team gets
 // a texture of its own (28988 + side, ids the game doesn't use), made when the team flag is made: the file as it is
 // (the big flag shows the top 74% of it: u 0..1, v 0..0.74).
 const int kBigFlagTexture = 28988;
